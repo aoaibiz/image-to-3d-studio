@@ -1,4 +1,8 @@
-param([string]$CachedWeights = '', [switch]$TripoSG)
+param([string]$CachedWeights = '', [switch]$TripoSG, [switch]$SendPhotoAndGuidesToOpenAI)
+if ($SendPhotoAndGuidesToOpenAI) {
+  $TripoSG = $true
+  Write-Host 'Guided paint sends a photo and two rendered views to OpenAI using your ChatGPT plan. Check your remaining allowance and credit settings before enabling it. This preview cannot measure account charges.'
+}
 $savedEnv = @{}
 foreach ($name in @('npm_config_cache', 'npm_config_userconfig', 'npm_config_globalconfig')) { $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 try {
@@ -37,7 +41,9 @@ if ($TripoSG) {
     if ($LASTEXITCODE) { throw 'Use an absolute STUDIO_TRIPOSG_RUNTIME path.' }
   }
   & (Join-Path $PSScriptRoot 'engine\setup-triposg.ps1') @shapeOptions
-  & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -m studio.configure --engine triposg
+  $engineOptions = @('--engine', 'triposg')
+  if ($SendPhotoAndGuidesToOpenAI) { $engineOptions = @('--engine', 'triposg-guided', '--allow-send-to-openai') }
+  & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -m studio.configure @engineOptions
   if ($LASTEXITCODE) { throw 'Could not select the TripoSG engine for this Studio checkout.' }
 }
 Write-Host 'Setup complete. Start: .\.runtime\venv\Scripts\python.exe -m studio.server'

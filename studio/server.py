@@ -12,7 +12,7 @@ import subprocess
 import sys
 from urllib.parse import urlsplit, parse_qs
 from .core import JobCore, JobError, PipelineConflict, MAX_INPUT, ROOT, TERMINAL
-from engine.pipeline import SHAPE_PIPELINE
+from engine.pipeline import GUIDED_PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
 
 STATIC = {
     "/": "viewer/index.html",
@@ -166,11 +166,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_bytes(204, b"", "image/x-icon")
             return
         if path == "/api/engine":
-            self.send_json(200, {"pipeline": self.server.core.pipeline, "local": True})
+            pipeline = self.server.core.pipeline
+            self.send_json(200, {"pipeline": pipeline, "local": pipeline != GUIDED_PIPELINE,
+                                 **({"recipient": "OpenAI ChatGPT"} if pipeline == GUIDED_PIPELINE else {})})
             return
         if path == "/api/doctor":
-            if self.server.core.pipeline == SHAPE_PIPELINE:
-                self.send_json(200, shape_doctor(self.server.core))
+            if self.server.core.pipeline in SHAPE_PIPELINES:
+                result = shape_doctor(self.server.core)
+                if self.server.core.pipeline == GUIDED_PIPELINE:
+                    from engine.guided_provider import preflight
+                    provider = preflight()
+                    result.update(pipeline=GUIDED_PIPELINE, local=False, recipient="OpenAI ChatGPT")
+                    result["diagnostics"]["guided_paint"] = provider
+                    if not provider.get("available"):
+                        result.update(ok=False, message=provider.get("reason") or "Codexの画像生成環境を確認してください。")
+                self.send_json(200, result)
                 return
             checks = {
                 "python": (ROOT / ".runtime/venv/Scripts/python.exe").is_file(),

@@ -34,6 +34,7 @@ const state = document.querySelector('#job-state');
 const lastKey = 'image3d:last-job';
 const tripoSR = 'triposr-auto-finish-v2';
 const tripoSG = 'triposg-local-v1';
+const guidedSG = 'triposg-codex-guided-v1';
 let pipeline = null;
 let file = null, imageHash = '', jobId = '', stream = null, loadingJob = '', busy = false, jobActive = false, choice = 0, scrollOnResult = false;
 const terminal = new Set(['needs_review', 'failed', 'cancelled', 'interrupted']);
@@ -43,7 +44,11 @@ Object.assign(stages, {
   'segmenting source': '背景から被写体を切り出しています',
   'generating shape': '立体の形を推定しています',
   'resuming shape': '保存した計算結果から形状の生成を再開しています',
-  'painting model': '入力画像をもとに立体を着色しています'
+  'painting model': '入力画像をもとに立体を着色しています',
+  'preparing shape guides': '立体から背面の確認画像を作っています',
+  'requesting inferred paint': 'OpenAIで背面の塗装を推定しています',
+  'applying inferred paint': '推定した塗装を立体に合わせています',
+  'exporting guided model': '塗装済みのモデルを書き出しています'
 });
 function idKey(hash, engine) {
   return 'image3d:' + (engine === tripoSR ? 'finish-v2' : engine) + ':input:' + hash;
@@ -55,9 +60,13 @@ async function readEngine() {
   const info = document.querySelector('#engine-info');
   try {
     const engine = await api('/api/engine', { cache: 'no-store' });
-    if (engine.local !== true || ![tripoSR, tripoSG].includes(engine.pipeline)) throw Error('対応するローカル生成方式を確認できません。');
+    const local = engine.local === true && [tripoSR, tripoSG].includes(engine.pipeline);
+    const guided = engine.pipeline === guidedSG && engine.local === false && engine.recipient === 'OpenAI ChatGPT';
+    if (!local && !guided) throw Error('生成方式と送信先を確認できません。');
     pipeline = engine.pipeline;
-    info.textContent = pipeline === tripoSG
+    if (guided) {
+      info.textContent = '形状はこの端末で生成します。背面の塗装を推定するため、元写真と立体の確認画像をOpenAIに送信し、本人のChatGPT利用枠を使用します。';
+    } else info.textContent = pipeline === tripoSG
       ? 'TripoSG は画像の切り抜き・形状の生成・着色をすべてこの端末で処理します。CPU では数時間かかる場合があります。'
       : 'TripoSR がこの端末で形状を生成し、画像に合わせて仕上げます。';
   } catch (error) {

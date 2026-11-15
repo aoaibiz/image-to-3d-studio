@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from .process_group import ProcessGroup
 from .configure import read_pipeline
-from engine.pipeline import LEGACY_PIPELINE, PIPELINE, SHAPE_PIPELINE
+from engine.pipeline import GUIDED_PIPELINE, LEGACY_PIPELINE, PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
 import queue
 import re
 import sqlite3
@@ -33,7 +33,14 @@ class PipelineConflict(JobError):
 
 
 SHAPE_OUTPUTS = {"shape-master.glb", "appearance.json", "generation.json", "input-processed.png"}
+GUIDED_OUTPUTS = {"guided-paint.json", "guided-views.png", "guided-layout.json", "inferred-paint.png"}
 SHAPE_ERRORS = {
+    "guided_consent": "OpenAIへの送信設定を確認してください。ローカルの形状はジョブに保存されています。",
+    "guided_checkpoint": "保存した形状または塗装の記録を照合できません。ジョブのバックアップを確認してください。",
+    "guided_guides": "立体から背面の確認画像を作成できませんでした。保存した形状を確認してください。",
+    "guided_provider": "背面の推定画像を取得できませんでした。Codexのログイン・利用枠を確認してください。再開時は受付済みの結果を確認します。",
+    "guided_projection": "推定画像を立体に重ねられませんでした。元のローカルモデルはジョブに保存されています。",
+    "guided_export": "背面を仕上げたGLBの書き出しを確認できません。同じジョブを再開してください。",
     "shape_setup": "TripoSG のローカル環境を確認し、オプションのセットアップ後に再開してください。",
     "shape_memory": "空きメモリが足りず、計算を一時停止しました。ほかの作業が終わったら同じジョブの「再開」を押してください。",
     "shape_foreground": "画像の切り抜きに失敗しました。背景と被写体、U2Net の設定を確認してください。",
@@ -190,7 +197,9 @@ class JobCore:
                 "offline-preview.html",
                 "manifest.json",
             ]
-            if job["config"].get("pipeline") == SHAPE_PIPELINE:
+            if job["config"].get("pipeline") == GUIDED_PIPELINE:
+                names.extend(sorted(GUIDED_OUTPUTS))
+            if job["config"].get("pipeline") in SHAPE_PIPELINES:
                 names.extend(["shape-master.glb", "appearance.json", "generation.json"])
             if folder.exists():
                 names.extend(
@@ -430,7 +439,7 @@ class JobCore:
                     stamp,
                     json.dumps(
                         {
-                            "resolution": 256 if self.pipeline == SHAPE_PIPELINE else 96,
+                            "resolution": 256 if self.pipeline in SHAPE_PIPELINES else 96,
                             "texture_size": 1024,
                             "auto_finish": True,
                             "pipeline": self.pipeline,
@@ -606,6 +615,10 @@ class JobCore:
                 "generating shape",
                 "resuming shape",
                 "painting model",
+                "preparing shape guides",
+                "requesting inferred paint",
+                "applying inferred paint",
+                "exporting guided model",
             ):
                 with self.lock:
                     if self.get(job_id)["status"] == "running":
@@ -632,7 +645,11 @@ class JobCore:
             "editable.ply",
             "texture.png",
         }
-        shape = settings.get("pipeline") == SHAPE_PIPELINE
+        shape = settings.get("pipeline") in SHAPE_PIPELINES
+        guided = settings.get("pipeline") == GUIDED_PIPELINE
+        extra = SHAPE_OUTPUTS | GUIDED_OUTPUTS if guided else SHAPE_OUTPUTS
+        if guided:
+            required.update(GUIDED_OUTPUTS)
         if shape:
             required.update(SHAPE_OUTPUTS, {"material.mtl", "material_0.png"})
         if not isinstance(artifacts, dict) or not required.issubset(artifacts):
@@ -648,7 +665,7 @@ class JobCore:
             for name, expected in artifacts.items():
                 if (
                     not isinstance(name, str)
-                    or not (shape and name in SHAPE_OUTPUTS or re.fullmatch(
+                    or not (shape and name in extra or re.fullmatch(
                         r"(?:model\.glb|editable\.gltf|editable\.obj|editable\.ply|texture\.png|material\.mtl|material_[0-9]+\.png)",
                         name,
                     ))
@@ -683,7 +700,8 @@ class JobCore:
         glb = out / "model.glb"
         settings_path = out / "settings.json"
         config = self.get(job_id)["config"]
-        shape = config.get("pipeline") == SHAPE_PIPELINE
+        shape = config.get("pipeline") in SHAPE_PIPELINES
+        guided = config.get("pipeline") == GUIDED_PIPELINE
         if (
             hashlib.sha256((folder / "input.image").read_bytes()).hexdigest()
             != self.get(job_id)["input_sha256"]
@@ -732,7 +750,8 @@ class JobCore:
             if shape and isinstance(previous, dict) and previous.get("auto_finish_complete") is True:
                 from engine.triposg_cpu import read_json, valid_artifact
 
-                work = out / "local-shape-work" / "triposg"
+                base = out / "local-guided-work" / "base" if guided else out
+                work = base / "local-shape-work" / "triposg"
                 try:
                     key = read_json(work / "identity.json")["job_key"]
                     checkpoint = valid_artifact(work / "raw-shape.glb", key)
@@ -745,7 +764,9 @@ class JobCore:
                 for p in out.iterdir():
                     if p.is_file():
                         p.unlink()
-            if shape:
+            if guided:
+                command = [py, "-u", "-m", "engine.guided_shape_job", "--setup", str(self.directory / "engine.json")]
+            elif shape:
                 command = [py, "-u", "-m", "engine.local_shape_job"]
             else:
                 command = [py, str(self.root / "engine" / "infer.py")]
@@ -821,7 +842,7 @@ class JobCore:
             or not all((out / name).is_file() for name in manifest["files"])
         ):
             raise RuntimeError("proof hash mismatch")
-        if config.get("pipeline") in (PIPELINE, SHAPE_PIPELINE):
+        if config.get("pipeline") in (PIPELINE, *SHAPE_PIPELINES):
             source = None
             raw = settings.get("raw_export", "")
             if shape:

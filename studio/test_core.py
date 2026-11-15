@@ -4,8 +4,8 @@ import time
 import unittest
 from pathlib import Path
 from studio.core import JobCore, JobError, PipelineConflict
-from studio.configure import configure
-from engine.pipeline import PIPELINE, SHAPE_PIPELINE
+from studio.configure import configure, read_pipeline
+from engine.pipeline import GUIDED_PIPELINE, PIPELINE, SHAPE_PIPELINE
 
 
 class CoreTests(unittest.TestCase):
@@ -58,6 +58,20 @@ class CoreTests(unittest.TestCase):
         self.core._validate_image = lambda data: None
         self.assertEqual(self.core.get(second["id"])["status"], "interrupted")
         self.assertTrue(self.core.events(second["id"], 0))
+
+    def test_guided_storage_requires_explicit_consent_and_local_selection_revokes_it(self):
+        import json
+        directory = self.root / "new-store"
+        with self.assertRaises(ValueError):
+            configure(directory, "triposg-guided")
+        self.assertEqual(read_pipeline(directory), PIPELINE)
+        configure(directory, "triposg-guided", allow_send_to_openai=True)
+        self.assertEqual(read_pipeline(directory), GUIDED_PIPELINE)
+        config_file = directory / "engine.json"
+        self.assertIn("agreement", json.loads(config_file.read_text()))
+        configure(directory, "triposg")
+        self.assertNotIn("agreement", json.loads(config_file.read_text()))
+        self.assertEqual(read_pipeline(directory), SHAPE_PIPELINE)
 
     def test_shape_selection_survives_restart_and_old_requests_remain_idempotent(self):
         old, _ = self.core.create(b"one", "old-key", PIPELINE)
