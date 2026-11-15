@@ -180,6 +180,33 @@ class GuidedTextureTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "opening agreement"):
                 guided._register_panel(panel, first)
 
+    def test_offset_thin_panel_can_register_without_stretching_or_filling_holes(self):
+        target = np.zeros((guided.SIZE, guided.SIZE), bool)
+        target[90:651, 320:419] = True
+        target[245:315, 350:369] = False
+        shifted = np.roll(target, 39, axis=1)
+        self.assertLess(guided._iou(target, shifted), 0.75)
+
+        def panel(mask):
+            return Image.fromarray(np.where(mask[:, :, None], [94, 55, 32], 255).astype(np.uint8))
+
+        _, _, stats = guided._register_panel(panel(shifted), target)
+        self.assertGreater(stats["result_iou"], 0.99)
+        self.assertEqual(stats["fit"][0][0], stats["fit"][1][1])
+        shifted[245:315, 389:408] = True
+        with self.assertRaisesRegex(ValueError, "opening agreement"):
+            guided._register_panel(panel(shifted), target)
+
+    def test_clipped_image_is_rejected_even_with_high_initial_overlap(self):
+        target = np.zeros((guided.SIZE, guided.SIZE), bool)
+        target[210:520, 505:754] = True
+        cut = np.zeros_like(target)
+        cut[210:520, 524:] = True
+        self.assertGreater(guided._iou(target, cut), 0.80)
+        image = np.where(cut[:, :, None], [40, 95, 80], 255).astype(np.uint8)
+        with self.assertRaisesRegex(ValueError, "position, scale or silhouette"):
+            guided._register_panel(Image.fromarray(image), target)
+
     def test_disconnected_piece_survives_registration(self):
         mask = np.zeros((768, 768), bool)
         mask[60:450, 90:560] = True

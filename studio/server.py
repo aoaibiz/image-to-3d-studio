@@ -193,7 +193,7 @@ class Handler(BaseHTTPRequestHandler):
                 if self.server.core.pipeline == HOST_PIPELINE:
                     result.update(pipeline=HOST_PIPELINE, local=False, recipient="OpenAI ChatGPT")
                     result["diagnostics"]["guided_paint"] = {"provider": "Codex host / OpenAI ImageGen",
-                                                             "host_image_tool": "checked by the connected host"}
+                                                             "host_image_tool": "unverified until a connected host returns a generated image"}
                 if self.server.core.pipeline == GUIDED_PIPELINE:
                     from engine.guided_provider import preflight
                     provider = preflight()

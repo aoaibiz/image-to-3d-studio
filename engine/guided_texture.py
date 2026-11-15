@@ -342,9 +342,17 @@ def _register_panel(panel, obj):
     q, expected = box(obj)
     ratio = expected / span
     raw = _iou(mask, obj)
-    if raw < 0.75 or np.max(np.abs(ratio - 1)) > 0.12:
+    source_center = p + span / 2
+    guide_center = q + expected / 2
+    # A misplaced narrow subject can have little overlap despite exactly the
+    # same outline. Only correct small framing errors on fully visible panels.
+    clipped = np.any(p < 2) or np.any(p + span >= SIZE - 2)
+    if (np.max(np.abs(ratio - 1)) > 0.12
+            or np.max(np.abs(guide_center - source_center)) > 0.09 * SIZE
+            or clipped):
         raise ValueError("Inferred panel has the wrong position, scale or silhouette")
-    matrix = np.column_stack((np.diag(ratio), q - ratio * p))
+    scale = float(np.dot(span, expected) / np.dot(span, span))
+    matrix = np.column_stack((np.eye(2) * scale, guide_center - scale * source_center))
     rgb = cv2.warpAffine(
         gen, matrix, (SIZE, SIZE), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255)
     )
@@ -550,11 +558,13 @@ def apply_guides(
         sheet = sheet.convert("RGB")
     fg = _single(foreground, 32 * MIB)
     # Verify size/mode before _matte decodes the full foreground.
-    checked = _image(fg, 12_000_000)
-    if checked.mode != "RGBA":
-        raise ValueError("Expected segmented RGBA photograph")
-    del checked
-    mask = _matte(io.BytesIO(fg), SIZE)[:, :, 3] >= 150
+    with Image.open(io.BytesIO(fg)) as header:
+        if (header.format != "PNG" or header.mode != "RGBA"
+                or header.width * header.height > 40_000_000
+                or getattr(header, "n_frames", 1) != 1):
+            raise ValueError("Expected single-frame segmented RGBA PNG of at most 40 MP")
+    matte = _matte(io.BytesIO(fg), SIZE)
+    mask = matte[:, :, 3] >= 150
     before = np.asarray(mesh.visual.material.baseColorTexture)
     side = len(before)
     faces = np.asarray(mesh.faces, dtype=np.int32)
