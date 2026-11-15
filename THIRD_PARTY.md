@@ -1,5 +1,7 @@
 # Third-party components and model provenance
 
+The diagnostic comparison of *Chasse with Christ in Majesty and the Lamb of God*, accession 17.190.523, includes two CC0 photographs from The Metropolitan Museum of Art and views rendered from the Studio trial. Only the three-quarter photograph was used for generation. [Museum collection record](https://www.metmuseum.org/art/collection/search/464494) · [Open Access policy](https://www.metmuseum.org/about-the-met/policies-and-documents/open-access)
+
 The optional Pixal3D adapter sends a published CC0 photograph to a community-operated inference service. TencentARC publishes Pixal3D under MIT and documents separate third-party components. Studio distributes its client code. Operators of a self-hosted installation must also check the terms for its weights and components. [Upstream source and license](https://github.com/TencentARC/Pixal3D) · [Upstream notices](https://github.com/TencentARC/Pixal3D/blob/master/NOTICE) · [Space operator and transfer details](engine/PIXAL3D.md)
 
 任意の CPU 形状エンジン TripoSG のコード、重み、同梱モジュールの個別条件、取得元・固定リビジョンは [TripoSG の第三者条件](engine/TRIPOSG.md#第三者の利用条件) に記載しています。これらの資材は各利用者の専用環境に取得します。
