@@ -41,6 +41,10 @@ const terminal = new Set(['needs_review', 'failed', 'cancelled', 'interrupted'])
 const stages = { queued: '順番待ち', starting: '生成の準備中', 'initializing model': 'モデルを準備中', preprocessing: '画像を整えています', 'selecting source': '対象を選んでいます', 'finishing model': '形と塗装を仕上げています', 'resuming finish': '保存した立体から仕上げを再開しています', 'running model': '立体を推定中', 'extracting mesh': '形状を取り出しています', 'baking texture': '表面の色を作成中', inference: '立体を生成中', mesh: '形状を作成中', texture: 'テクスチャを作成中', export: 'GLB を出力中', inspection: '形式を検査中', rendering: '確認画像を作成中', appearance: '入力画像と立体を比較中', needs_review: '確認待ち', failed: '処理に失敗', cancelled: '中止', interrupted: '中断' };
 function message(text) { state.textContent = text; }
 Object.assign(stages, {
+  'sf3d connecting': 'Stability AI 公式Spaceに接続しています', 'sf3d uploaded': '切り抜きを送信しました',
+  'sf3d preprocess_waiting': '公式Spaceで前処理を待っています', 'sf3d preprocessed': '前処理が完了しました',
+  'sf3d generation_waiting': '公式Spaceで立体生成を待っています', 'sf3d downloading': '材質付きの立体を取得しています',
+  'sf3d complete': '公式の立体を取得しました', 'sf3d exporting': '表示用の向きと編集用データを整えています',
   'segmenting source': '背景から被写体を切り出しています',
   'generating shape': '立体の形を推定しています',
   'resuming shape': '保存した計算結果から形状の生成を再開しています',
@@ -65,9 +69,12 @@ async function readEngine() {
     const engine = await api('/api/engine', { cache: 'no-store' });
     const local = engine.local === true && [tripoSR, tripoSG].includes(engine.pipeline);
     const guided = [guidedSG, 'triposg-host-guided-v1', 'triposg-codex-observed-v1'].includes(engine.pipeline) && engine.local === false && engine.recipient === 'OpenAI ChatGPT';
-    if (!local && !guided) throw Error('生成方式と送信先を確認できません。');
+    const sf3d = engine.pipeline === 'sf3d-official-preview' && engine.local === false && engine.recipient === 'Stability AI / Hugging Face';
+    if (!local && !guided && !sf3d) throw Error('生成方式と送信先を確認できません。');
     pipeline = engine.pipeline;
-    if (guided) {
+    if (sf3d) {
+      info.textContent = '評価用の Stable Fast 3D を使用します。切り抜いた写真を Hugging Face 上の Stability AI 公式Spaceに送り、匿名の利用枠で材質付きの立体を生成します。';
+    } else if (guided) {
       info.textContent = '形状はこの端末で生成します。背面の塗装を推定するため、元写真と立体の確認画像をOpenAIに送信し、本人のChatGPT利用枠を使用します。';
       if (pipeline === 'triposg-codex-observed-v1') info.textContent = '形状はこの端末で生成します。本人のChatGPT利用枠で、元写真の外観解析を1回、写真と形状ガイドから背面の塗装を推定する画像生成を1回、OpenAIに依頼します。';
       if (pipeline === 'triposg-host-guided-v1') info.textContent += '画像生成に対応するCodexに、このジョブを引き継いでください。';
@@ -144,11 +151,12 @@ async function loadResult(job) {
     comparison.hidden = !(sheet === actualHash + '_appearance-comparison.jpg' && job.artifacts.includes(sheet));
     if (!comparison.hidden) comparison.href = '/api/jobs/' + job.id + '/artifacts/' + sheet;
     const resultSG = (settings.pipeline || job.config?.pipeline) === tripoSG;
-    front.textContent = resultSG ? '+Z 視点' : '入力側 +Z';
+    const resultSF3D = settings.pipeline === 'sf3d-official-preview';
+    front.textContent = resultSF3D ? '推定入力側 +Z' : resultSG ? '+Z 視点' : '入力側 +Z';
     const selectedPose = !resultSG && settings.source_selection?.detected_count ? `全${settings.source_selection.detected_count}個の候補から上段の中央に近い1個を選びました。` : '';
     const shapeNote = resultSG
       ? 'TripoSG が立体の形と向きを推定しました。入力画像に写った側は、立体を回して確認してください。'
-      : finishes[settings.finish_profile] || '';
+      : resultSF3D ? 'SF3Dが形状と材質を推定しました。背面の模様と薄い部品を確認してください。' : finishes[settings.finish_profile] || '';
     const pose = document.querySelector('#pose-preview');
     pose.hidden = !selectedPose || !job.artifacts.includes('input-processed.png');
     if (!pose.hidden) pose.querySelector('img').src = `/api/jobs/${job.id}/artifacts/input-processed.png`;

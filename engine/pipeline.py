@@ -1,5 +1,11 @@
 """Pipeline identifiers saved with each job, including interrupted jobs."""
 
+SF3D_PIPELINE = "sf3d-official-preview"
+SF3D_AGREEMENT = {
+    "recipient": "Stability AI / Hugging Face Space stabilityai/stable-fast-3d",
+    "image": "locally selected and segmented photograph", "quota": "personal anonymous ZeroGPU allowance",
+    "purpose": "preview evaluation", "schema": 1,
+}
 LEGACY_PIPELINE = "triposr-auto-finish-v1"
 PIPELINE = "triposr-auto-finish-v2"
 SHAPE_PIPELINE = "triposg-local-v1"

@@ -2,7 +2,13 @@
 
 Stability AI が Hugging Face で公開しているデモを、本人の回線と匿名利用枠で明示的に選択するための Python アダプターです。通常のローカル生成は従来どおり利用できます。利用者には、対象の前景画像を公式 Space に送信することと、本人の匿名 ZeroGPU 枠を使うことを伝え、了承を得てから呼び出してください。空き枠やサービス継続は提供元に依存します。[公式デモ](https://huggingface.co/spaces/stabilityai/stable-fast-3d)
 
-## 呼び出し
+## Studio で使う
+
+Windows では初回に `./setup.ps1 -AllowOfficialSpace` を実行します。既存のセットアップでは `.\.runtime\venv\Scripts\python.exe -m studio.configure --engine sf3d-official-preview --allow-official-space` で切り替えられます。起動は `.\.runtime\venv\Scripts\python.exe -m studio.server` です。Web、CLI、MCP は同じ設定を使います。診断のリモート利用枠は、実際に依頼した時点で確認します。
+
+表示・ダウンロード用の `model.glb` と編集用の自己完結型 `editable.gltf` は、推定入力側を +Z にそろえています。テクスチャ・法線・材質と形状のバイナリは提供元のままです。提供元座標の元データは `provider-native.glb`、入力・前景・生成受付と表示モデルの対応は `generation.json` に残ります。見た目は同じ表示用GLBの検品画像で確認してください。
+
+## Pythonから呼び出す
 
 ```python
 from pathlib import Path

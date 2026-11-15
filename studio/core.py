@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from .process_group import ProcessGroup
 from .configure import read_pipeline
-from engine.pipeline import GUIDED_PIPELINES, HOST_PIPELINE, LEGACY_PIPELINE, OBSERVED_PIPELINE, PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
+from engine.pipeline import GUIDED_PIPELINES, HOST_PIPELINE, LEGACY_PIPELINE, OBSERVED_PIPELINE, PIPELINE, SF3D_PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
 import queue
 import re
 import sqlite3
@@ -39,6 +39,9 @@ class AwaitingHostImage(Exception):
 SHAPE_OUTPUTS = {"shape-master.glb", "appearance.json", "generation.json", "input-processed.png"}
 GUIDED_OUTPUTS = {"guided-paint.json", "guided-views.png", "guided-layout.json", "inferred-paint.png"}
 SHAPE_ERRORS = {
+    "sf3d_consent": "公式Spaceへの送信と匿名利用枠の使用設定を確認し、同じジョブを再開してください。",
+    "sf3d_pending": "公式Spaceの受付は保存されています。同じジョブを再開して結果を確認してください。",
+    "sf3d_error": "SF3Dの前景切り抜き・公式Spaceの利用枠・保存した成果物を確認してください。受け付けた生成は再送しません。",
     "guided_chatgpt_observation": "元写真のChatGPT解析を確認できません。ログイン・利用枠と保存した受付を確認し、同じジョブを再開してください。",
     "guided_observation": "写真の模様を読み取れませんでした。ローカルの画像解析モデルと空きメモリを確認して同じジョブを再開してください。",
     "guided_consent": "OpenAIへの送信設定を確認してください。ローカルの形状はジョブに保存されています。",
@@ -208,6 +211,8 @@ class JobCore:
                 names.extend(sorted(GUIDED_OUTPUTS))
             if job["config"].get("pipeline") in SHAPE_PIPELINES:
                 names.extend(["shape-master.glb", "appearance.json", "generation.json"])
+            if job["config"].get("pipeline") == SF3D_PIPELINE:
+                names.extend(["provider-native.glb", "generation.json"])
             if folder.exists():
                 names.extend(
                     p.name
@@ -446,8 +451,9 @@ class JobCore:
                     stamp,
                     json.dumps(
                         {
-                            "resolution": 256 if self.pipeline in SHAPE_PIPELINES else 96,
-                            "texture_size": 1024,
+                            **({} if self.pipeline == SF3D_PIPELINE else {
+                                "resolution": 256 if self.pipeline in SHAPE_PIPELINES else 96, "texture_size": 1024,
+                            }),
                             "auto_finish": True,
                             "pipeline": self.pipeline,
                         }
@@ -665,6 +671,8 @@ class JobCore:
                 "selecting source",
                 "resuming finish",
                 "finishing model",
+                "sf3d connecting", "sf3d uploaded", "sf3d preprocess_waiting", "sf3d preprocessed",
+                "sf3d generation_waiting", "sf3d downloading", "sf3d complete", "sf3d exporting",
                 "segmenting source",
                 "generating shape",
                 "resuming shape",
@@ -696,6 +704,9 @@ class JobCore:
 
     @staticmethod
     def _artifacts_valid(out, settings):
+        if settings.get("pipeline") == SF3D_PIPELINE:
+            from engine.sf3d_shape_job import valid
+            return valid(out, settings)
         artifacts = settings.get("artifact_sha256")
         required = {
             "model.glb",
@@ -759,6 +770,7 @@ class JobCore:
         glb = out / "model.glb"
         settings_path = out / "settings.json"
         config = self.get(job_id)["config"]
+        sf3d = config.get("pipeline") == SF3D_PIPELINE
         shape = config.get("pipeline") in SHAPE_PIPELINES
         guided = config.get("pipeline") in GUIDED_PIPELINES
         if (
@@ -774,8 +786,8 @@ class JobCore:
                 previous["input_sha256"] == self.get(job_id)["input_sha256"]
                 and previous["glb_sha256"]
                 == hashlib.sha256(glb.read_bytes()).hexdigest()
-                and previous["marching_cubes_resolution"] == config["resolution"]
-                and previous["texture_size"] == config["texture_size"]
+                and (sf3d or (previous["marching_cubes_resolution"] == config["resolution"]
+                              and previous["texture_size"] == config["texture_size"]))
                 and (
                     not config.get("auto_finish")
                     or previous.get("auto_finish_complete") is True
@@ -800,7 +812,7 @@ class JobCore:
                 config.get("auto_finish")
                 and isinstance(previous, dict)
                 and previous.get("auto_finish_complete") is True
-                and not shape
+                and not shape and not sf3d
                 and not (out / "raw-export" / "finish-checkpoint.json").is_file()
             ):
                 raise RuntimeError(
@@ -819,11 +831,13 @@ class JobCore:
                 if not checkpoint:
                     raise JobError("成果物と形状の再開用データを照合できません。ジョブのバックアップを確認してください。")
             # Only clear files inside this job's own output directory.
-            if not shape:
+            if not shape and not sf3d:
                 for p in out.iterdir():
                     if p.is_file():
                         p.unlink()
-            if guided:
+            if sf3d:
+                command = [py, "-u", "-m", "engine.sf3d_shape_job", "--setup", str(self.directory / "engine.json")]
+            elif guided:
                 command = [py, "-u", "-m", "engine.guided_shape_job", "--setup", str(self.directory / "engine.json")]
                 if config.get("pipeline") in (HOST_PIPELINE, OBSERVED_PIPELINE):
                     command.extend(["--pipeline", config["pipeline"]])
@@ -831,15 +845,10 @@ class JobCore:
                 command = [py, "-u", "-m", "engine.local_shape_job"]
             else:
                 command = [py, str(self.root / "engine" / "infer.py")]
-            command.extend([
-                str(folder / "input.image"),
-                str(out),
-                "--resolution",
-                str(config["resolution"]),
-                "--texture-size",
-                str(config["texture_size"]),
-            ])
-            if not shape:
+            command.extend([str(folder / "input.image"), str(out)])
+            if not sf3d:
+                command.extend(["--resolution", str(config["resolution"]), "--texture-size", str(config["texture_size"])])
+            if not shape and not sf3d:
                 command.extend(["--pipeline", config.get("pipeline", LEGACY_PIPELINE)])
             self._command(job_id, command, "starting")
         digest = hashlib.sha256(glb.read_bytes()).hexdigest()
@@ -847,8 +856,8 @@ class JobCore:
         if (
             settings["glb_sha256"] != digest
             or settings["input_sha256"] != self.get(job_id)["input_sha256"]
-            or settings["marching_cubes_resolution"] != config["resolution"]
-            or settings["texture_size"] != config["texture_size"]
+            or (not sf3d and (settings["marching_cubes_resolution"] != config["resolution"]
+                              or settings["texture_size"] != config["texture_size"]))
             or (
                 config.get("auto_finish")
                 and settings.get("auto_finish_complete") is not True
@@ -903,10 +912,13 @@ class JobCore:
             or not all((out / name).is_file() for name in manifest["files"])
         ):
             raise RuntimeError("proof hash mismatch")
-        if config.get("pipeline") in (PIPELINE, *SHAPE_PIPELINES):
+        if config.get("pipeline") in (PIPELINE, SF3D_PIPELINE, *SHAPE_PIPELINES):
             source = None
             raw = settings.get("raw_export", "")
-            if shape:
+            if sf3d:
+                source = out / "input-processed.png"
+                inspection["source_registration"] = {**settings["camera"], "status": "needs_review"}
+            elif shape:
                 source = out / "input-processed.png"
                 appearance = json.loads((out / "appearance.json").read_text(encoding="utf-8"))
                 inspection["source_registration"] = {
@@ -928,7 +940,7 @@ class JobCore:
                             str(source),
                             str(out),
                             digest,
-                            *(["--observed-view", "front"] if shape else []),
+                            *(["--observed-view", "front"] if shape or sf3d else []),
                         ],
                         "appearance",
                     )

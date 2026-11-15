@@ -12,7 +12,7 @@ import subprocess
 import sys
 from urllib.parse import urlsplit, parse_qs
 from .core import JobCore, JobError, PipelineConflict, MAX_INPUT, ROOT, TERMINAL
-from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS, OBSERVED_PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
+from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS, OBSERVED_PIPELINE, SF3D_PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
 
 STATIC = {
     "/": "viewer/index.html",
@@ -167,10 +167,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/engine":
             pipeline = self.server.core.pipeline
+            if pipeline == SF3D_PIPELINE:
+                self.send_json(200, {"pipeline": pipeline, "local": False, "recipient": "Stability AI / Hugging Face"})
+                return
             self.send_json(200, {"pipeline": pipeline, "local": pipeline not in GUIDED_PIPELINES,
                                  **({"recipient": "OpenAI ChatGPT"} if pipeline in GUIDED_PIPELINES else {})})
             return
         if path == "/api/doctor":
+            if self.server.core.pipeline == SF3D_PIPELINE:
+                checks = {name: (ROOT / path).is_file() for name, path in {
+                    "python": ".runtime/venv/Scripts/python.exe", "foreground_model": ".runtime/u2net/u2net.onnx",
+                    "validator": ".runtime/validator/gltf_validator.exe", "viewer": "viewer/node_modules/three/build/three.module.js",
+                }.items()}
+                checks["node"] = bool(shutil.which("node"))
+                self.send_json(200, {"pipeline": SF3D_PIPELINE, "local": False, "recipient": "Stability AI / Hugging Face",
+                                     "ok": all(checks.values()), "checks": checks,
+                                     "diagnostics": {"remote_availability": "未確認。実行時に公式Spaceの混雑・匿名利用枠を確認します。"}})
+                return
             if self.server.core.pipeline in SHAPE_PIPELINES:
                 result = shape_doctor(self.server.core)
                 if self.server.core.pipeline in (GUIDED_PIPELINE, HOST_PIPELINE):

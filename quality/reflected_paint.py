@@ -14,7 +14,10 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from quality.general_appearance import _bbox, _clay_mask, _digest
+if __package__:
+    from .general_appearance import _bbox, _clay_mask, _digest
+else:  # general_appearance.py also runs directly in the Studio worker.
+    from general_appearance import _bbox, _clay_mask, _digest
 
 
 SIZE = 144

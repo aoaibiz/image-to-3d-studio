@@ -1,4 +1,10 @@
-param([string]$CachedWeights = '', [switch]$TripoSG, [switch]$SendPhotoAndGuidesToOpenAI, [switch]$UseCodexHost, [switch]$ChatGPTPhotoAnalysis)
+param([string]$CachedWeights = '', [switch]$TripoSG, [switch]$SendPhotoAndGuidesToOpenAI, [switch]$UseCodexHost, [switch]$ChatGPTPhotoAnalysis, [switch]$AllowOfficialSpace)
+if ($AllowOfficialSpace -and ($TripoSG -or $SendPhotoAndGuidesToOpenAI -or $ChatGPTPhotoAnalysis -or $UseCodexHost)) {
+  throw 'Select the official SF3D Space or one local engine per setup.'
+}
+if ($AllowOfficialSpace) {
+  Write-Host 'The selected foreground photo is sent to the official Stability AI Hugging Face Space using your anonymous ZeroGPU allowance for evaluation. Check the provider terms for your intended use.'
+}
 if ($ChatGPTPhotoAnalysis -and (!$SendPhotoAndGuidesToOpenAI -or $UseCodexHost)) {
   throw 'Use -ChatGPTPhotoAnalysis with -SendPhotoAndGuidesToOpenAI for the ChatGPT CLI observation and paint pipeline. -UseCodexHost selects a separate pipeline.'
 }
@@ -16,7 +22,7 @@ try {
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 New-Item -ItemType Directory -Force .runtime, .runtime\validator, .runtime\npm-cache | Out-Null
-& (Join-Path $PSScriptRoot 'engine\setup.ps1') -CachedWeights $CachedWeights
+& (Join-Path $PSScriptRoot 'engine\setup.ps1') -CachedWeights $CachedWeights -SkipTripoSR:$AllowOfficialSpace
 if (!(Get-Command npm.cmd -ErrorAction SilentlyContinue)) { throw 'Node.js/npm required: https://nodejs.org/' }
 $env:npm_config_cache = Join-Path $PSScriptRoot '.runtime\npm-cache'
 $env:npm_config_userconfig = Join-Path $PSScriptRoot '.runtime\npm-user.npmrc'
@@ -41,6 +47,10 @@ if (!(Test-Path $zip) -or (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -
 }
 Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $PSScriptRoot '.runtime\validator') -Force
 if ((Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() -ne $exeHash) { throw 'Khronos validator executable hash mismatch' }
+if ($AllowOfficialSpace) {
+  & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -m studio.configure --engine sf3d-official-preview --allow-official-space
+  if ($LASTEXITCODE) { throw 'Could not save SF3D photo and anonymous quota settings.' }
+}
 if ($TripoSG) {
   $shapeOptions = @{}
   if ($env:STUDIO_TRIPOSG_RUNTIME) {
