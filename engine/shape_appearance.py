@@ -22,6 +22,7 @@ from scipy.sparse.linalg import cg, spsolve
 from scipy.spatial import cKDTree
 
 from engine.finish_export import export_finished, world_meshes
+from engine.shape_camera import lens_parameters, project_pinhole
 
 
 def _sha(path):
@@ -208,15 +209,29 @@ def _basis(yaw, pitch, up):
     return rotation
 
 
-def _fit(verts, basis, mask):
+def _lens_coordinates(verts, basis, lens):
+    if lens is None:
+        return None
+    lo, hi = verts.min(axis=0), verts.max(axis=0)
+    return (lo + hi) * 0.5 @ basis.T, lens[0] / np.max(hi - lo)
+
+
+def _fit(verts, basis, mask, lens=None):
     xyz = verts @ basis.T
     lo, hi = xyz.min(axis=0), xyz.max(axis=0)
     y, x = np.nonzero(mask)
     target_mid = np.array([x.min() + x.max(), y.min() + y.max()]) * 0.5
     span = np.array([np.ptp(x), np.ptp(y)])
-    scale = np.min(span / np.maximum((hi - lo)[:2], 1e-9))
-    offset = target_mid - ((lo + hi)[:2] * 0.5 * [1, -1]) * scale
     projected = xyz.copy()
+    xlo, xhi = lo[:2], hi[:2]
+    if lens is not None:
+        projected = project_pinhole(xyz, *_lens_coordinates(verts, basis, lens))
+        xlo, xhi = projected[:, :2].min(0), projected[:, :2].max(0)
+        target_mid += max(span) * lens[2:]
+    scale = np.min(span / np.maximum(xhi - xlo, 1e-9))
+    if lens is not None:
+        scale *= lens[1]
+    offset = target_mid - ((xlo + xhi) * 0.5 * [1, -1]) * scale
     projected[:, :2] = projected[:, :2] * [scale, -scale] + offset
     return projected, scale, offset, (lo + hi) / 2, max(hi[1] - lo[1], 1e-9)
 
@@ -247,7 +262,8 @@ def _registration(verts, faces, matte, hint, up, frame=None):
             raise ValueError(
                 "Camera frame must be a proper orthonormal basis without reflection."
             )
-        projected, *_ = _fit(verts, basis, low)
+        lens = lens_parameters(frame)
+        projected, *_ = _fit(verts, basis, low, lens)
         mask = _raster(projected, faces, 96)[0] >= 0
         score = np.count_nonzero(mask & low) / max(1, np.count_nonzero(mask | low))
         if score < 0.72:
@@ -257,6 +273,7 @@ def _registration(verts, faces, matte, hint, up, frame=None):
         return basis, {
             "method": "supplied source-camera frame verified against observed silhouette",
             "basis_rows": basis.tolist(),
+            **({"pinhole": frame["pinhole"]} if lens is not None else {}),
             "silhouette_iou": round(score, 5),
             "photographic_pose_verified": False,
         }
@@ -411,11 +428,17 @@ def _material_seeds(rgb, weight):
     return colours, eligible
 
 
-def _surface_material(mesh, parts, basis, first_face, matte, distance):
+def _surface_material(
+    mesh, parts, basis, first_face, matte, distance, lens_coords=None
+):
     faces = np.asarray(mesh.faces)
     graph, weld = _surface_graph(mesh, parts)
     ncomponents, component = connected_components(graph, directed=False)
     z_normal = np.asarray(mesh.face_normals) @ basis[2]
+    if lens_coords is not None:
+        center, inv = lens_coords
+        rays = _norm([0, 0, 1] - (mesh.triangles_center @ basis.T - center) * inv)
+        z_normal = np.einsum("ij,ij->i", mesh.face_normals @ basis.T, rays)
     seen = (
         (first_face >= 0)
         & (distance > 3)
@@ -631,11 +654,13 @@ def paint_shape(
             **metrics,
         }
     basis, reg = _registration(verts, faces, matte, camera_hint, up_axis, camera_frame)
-    projected, scale, offset, mid, height = _fit(verts, basis, mask)
+    lens = lens_parameters(camera_frame)
+    lens_coords = _lens_coordinates(verts, basis, lens)
+    projected, scale, offset, mid, height = _fit(verts, basis, mask, lens)
     first_face, _, depth = _raster(projected, faces, len(mask))
     parts = np.repeat(np.arange(len(meshes)), [len(m.faces) for m in meshes])
     propagated, propagation_info = _surface_material(
-        mesh, parts, basis, first_face, matte, distance
+        mesh, parts, basis, first_face, matte, distance, lens_coords
     )
     field = _field(baseline_glb, matte)
     mapping, indices, uv, idmap, weights, source_id, corner = _atlas(mesh, texture_size)
@@ -654,7 +679,14 @@ def paint_shape(
         bary = np.column_stack((1 - bc.sum(axis=1), bc))
         point = np.einsum("ij,ijk->ik", bary, v[ids]) @ basis.T
         unit_norm = _norm(np.einsum("ij,ijk->ik", bary, normals[ids]) @ basis.T)
-        xy = point[:, :2] * [scale, -scale] + offset
+        screen = point
+        facing = unit_norm[:, 2]
+        if lens_coords is not None:
+            center, inv = lens_coords
+            screen = project_pinhole(point, center, inv)
+            rays = _norm([0, 0, 1] - (point - center) * inv)
+            facing = np.einsum("ij,ij->i", unit_norm, rays)
+        xy = screen[:, :2] * [scale, -scale] + offset
         xi, yi = np.rint(xy).astype(int).T
         within = (xi >= 0) & (xi < len(mask)) & (yi >= 0) & (yi < len(mask))
         xi = np.clip(xi, 0, len(mask) - 1)
@@ -670,11 +702,11 @@ def paint_shape(
         )
         tolerance = np.where(adjacent, 1.8 / scale, 1e-6 * height)
         visible = (
-            within & (first >= 0) & (np.abs(point[:, 2] - depth[yi, xi]) <= tolerance)
+            within & (first >= 0) & (np.abs(screen[:, 2] - depth[yi, xi]) <= tolerance)
         )
         direct = (
             visible
-            * np.clip((unit_norm[:, 2] - 0.14) / 0.42, 0, 1)
+            * np.clip((facing - 0.14) / 0.42, 0, 1)
             * np.clip((distance[yi, xi] - 1.5) / 4, 0, 1)
         )
         direct_count += np.count_nonzero(direct > 0.5)

@@ -1,4 +1,4 @@
-"""Estimate a proper orthographic source frame for an untextured triangle mesh.
+"""Estimate a source frame and optional pinhole projection for a triangle mesh.
 
 The pinned TripoSG inference script exports the decoder XYZ coordinates without
 camera metadata. A fitted view describes this one image only; gravity, lighting,
@@ -9,7 +9,9 @@ import hashlib
 from pathlib import Path
 
 import numpy as np
+from numba import njit
 from PIL import Image, ImageOps
+from scipy.optimize import minimize
 from scipy import ndimage
 import trimesh
 
@@ -87,13 +89,48 @@ def _reference(cutout, n):
     return pixels[..., :3], mask, holes, span, mid
 
 
-def _project(points, basis, ref):
+def lens_parameters(frame):
+    """Bounded source-camera fit in units of the raw object's longest AABB side."""
+    if frame is None or "pinhole" not in frame:
+        return None
+    spec = frame["pinhole"]
+    params = np.asarray(
+        [spec["inverse_distance"], spec["magnification"], *spec["shift_fraction"]],
+        dtype=float,
+    )
+    if (
+        params.shape != (4,)
+        or not np.isfinite(params).all()
+        or not 0 <= params[0] <= 0.85
+        or not 0.91 <= params[1] <= 1.09
+        or np.any(np.abs(params[2:]) > 0.055)
+    ):
+        raise ValueError("Invalid source-camera projection parameters.")
+    return params
+
+
+def project_pinhole(xyz, center, inverse_distance):
+    """Project camera-space points; projected z is affine over image triangles."""
+    delta = xyz - center
+    w = 1 - delta[:, 2:3] * inverse_distance
+    if np.any(w <= 0):
+        raise ValueError("Geometry intersects the fitted camera plane.")
+    return center + delta / w
+
+
+def _project(points, basis, ref, lens=None):
     # Explicit small-column sums keep BLAS from allocating a worker team per view.
     xyz = sum(points[:, j, None] * basis[:, j] for j in range(3))
+    if lens is not None:
+        xyz = project_pinhole(xyz, np.zeros(3), lens[0])
     lo = xyz[:, :2].min(0)
     hi = xyz[:, :2].max(0)
     scale = min(ref[3] / np.maximum(hi - lo, 1e-10))
-    xyz[:, :2] = (xyz[:, :2] - (hi + lo) / 2) * [scale, -scale] + ref[4]
+    offset = ref[4]
+    if lens is not None:
+        scale *= lens[1]
+        offset = offset + np.max(ref[3]) * lens[2:]
+    xyz[:, :2] = (xyz[:, :2] - (hi + lo) / 2) * [scale, -scale] + offset
     return xyz
 
 
@@ -113,10 +150,10 @@ def _point_mask(points, basis, ref):
     return ndimage.binary_closing(hit, structure=np.ones((3, 3), bool))
 
 
-def _depth(vertices, faces, basis, ref):
-    """Exact orthographic closest-surface depth, with bounded raster working sets."""
+def _depth(vertices, faces, basis, ref, lens=None):
+    """Closest-surface depth in projected coordinates, with bounded working sets."""
     n = ref[1].shape[0]
-    projected = _project(vertices, basis, ref)
+    projected = _project(vertices, basis, ref, lens)
     depth = np.full(n * n, -np.inf, dtype=np.float32)
     for start in range(0, len(faces), 4096):
         tri = projected[faces[start : start + 4096]]
@@ -212,6 +249,93 @@ def _frame(basis):
     )
 
 
+@njit
+def _triangle_mask(xy, faces, side):
+    """Filled triangles for trial scoring; integer pixel centres match final raster."""
+    hit = np.zeros((side, side), dtype=np.bool_)
+    for tri in faces:
+        a, b, c = xy[tri[0]], xy[tri[1]], xy[tri[2]]
+        abx, aby = b[0] - a[0], b[1] - a[1]
+        acx, acy = c[0] - a[0], c[1] - a[1]
+        det = abx * acy - aby * acx
+        if abs(det) < 1e-10:
+            continue
+        for y in range(
+            max(0, int(np.ceil(min(a[1], b[1], c[1])))),
+            min(side - 1, int(np.floor(max(a[1], b[1], c[1])))) + 1,
+        ):
+            for x in range(
+                max(0, int(np.ceil(min(a[0], b[0], c[0])))),
+                min(side - 1, int(np.floor(max(a[0], b[0], c[0])))) + 1,
+            ):
+                dx, dy = x - a[0], y - a[1]
+                u, v = (dx * acy - dy * acx) / det, (dy * abx - dx * aby) / det
+                if min(u, v, 1 - u - v) >= -1e-6:
+                    hit[y, x] = True
+    return hit
+
+
+def _refine_lens(vertices, faces, ref, candidates):
+    # Cluster only the search proxy. Final ranking uses every original triangle.
+    groups, inverse = np.unique(
+        np.floor(vertices * 48 + 0.5).astype(np.int32), axis=0, return_inverse=True
+    )
+    counts = np.bincount(inverse, minlength=len(groups))
+    proxy = np.column_stack(
+        [np.bincount(inverse, weights=c) / counts for c in vertices.T]
+    )
+    triangles = inverse[faces]
+    triangles = triangles[np.all(triangles != np.roll(triangles, -1, axis=1), axis=1)]
+    if not len(triangles):
+        return []
+    results = []
+    for _, parameters, *_ in _distinct(candidates, 4, 32):
+        up, yaw, pitch, roll = parameters
+
+        def objective(x):
+            basis = _basis(up, *x[:3])
+            xy = _project(proxy, basis, ref, x[3:])[:, :2]
+            mask = _triangle_mask(xy, triangles, len(ref[1]))
+            return -_score(mask, ref)[0]
+
+        bounds = [
+            (yaw - 22, yaw + 22),
+            (pitch - 22, pitch + 22),
+            (roll - 12, roll + 12),
+            (0, 0.85),
+            (0.91, 1.09),
+            (-0.055, 0.055),
+            (-0.055, 0.055),
+        ]
+        sol = minimize(
+            objective,
+            [(a + b) / 2 for a, b in bounds],
+            method="Powell",
+            bounds=bounds,
+            options={"maxiter": 4, "xtol": 0.01, "ftol": 0.0004},
+        )
+        args = (up, *sol.x[:3])
+        basis, lens = _basis(*args), sol.x[3:]
+        depth = _depth(vertices, faces, basis, ref, lens)
+        shape, iou, blocked = _score(np.isfinite(depth), ref)
+        support = _edge_support(depth, ref)
+        results.append(
+            (shape + 0.025 * (support or 0), args, basis, iou, blocked, support, lens)
+        )
+    return results
+
+
+def _frame_lens(basis, lens):
+    frame = _frame(basis)
+    if lens is not None:
+        frame["pinhole"] = {
+            "inverse_distance": float(lens[0]),
+            "magnification": float(lens[1]),
+            "shift_fraction": lens[2:].tolist(),
+        }
+    return frame
+
+
 def register_camera(mesh, foreground):
     """Fit a raw GLB/Trimesh to a true RGBA foreground; return JSON-ready evidence."""
     mesh_digest = _file_digest(mesh)
@@ -278,20 +402,30 @@ def register_camera(mesh, foreground):
         shape_score, iou, blocked = _score(np.isfinite(depth), high)
         support = _edge_support(depth, high)
         exact.append(
-            (shape_score + 0.025 * (support or 0), args, b, iou, blocked, support)
+            (shape_score + 0.025 * (support or 0), args, b, iou, blocked, support, None)
         )
     ranked = sorted(exact, key=lambda item: -item[0])
-    score, parameters, b, iou, blocked, support = ranked[0]
+    attempted_lens = ranked[0][3] < 0.72
+    if attempted_lens:
+        exact.extend(_refine_lens(verts, mesh.faces, high, ranked))
+        ranked = sorted(exact, key=lambda item: -item[0])
+    score, parameters, b, iou, blocked, support, lens = ranked[0]
     alternative = next((r for r in ranked[1:] if _distance(b, r[2]) >= 40), None)
     gap = float(score - alternative[0]) if alternative is not None else None
     ambiguous = gap is None or gap < 0.025
     transform = np.eye(4)
     transform[:3, :3] = b
     return {
-        "method": "right-handed orthographic fit to foreground alpha and visible depth boundaries",
+        "method": (
+            "right-handed orthographic fit"
+            if lens is None
+            else "right-handed calibrated pinhole fit"
+        )
+        + " to foreground alpha and visible depth boundaries",
+        "pinhole_refinement_attempted": attempted_lens,
         "mesh_file_sha256": mesh_digest,
         "foreground_file_sha256": _file_digest(foreground),
-        "camera_frame": _frame(b),
+        "camera_frame": _frame_lens(b, lens),
         "upright_transform": transform.tolist(),
         "search_parameters": dict(
             zip(("signed_axis", "azimuth_deg", "elevation_deg", "roll_deg"), parameters)
@@ -317,7 +451,7 @@ def register_camera(mesh, foreground):
         else round(float(alternative[3]), 5),
         "alternate_camera_frame": None
         if alternative is None
-        else _frame(alternative[2]),
+        else _frame_lens(alternative[2], alternative[6]),
         "foreground_touches_source_border": bool(touched),
         "coarse_views": len(trials),
         "exact_views": len(exact),

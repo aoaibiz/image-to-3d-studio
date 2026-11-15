@@ -10,6 +10,27 @@ from engine import shape_appearance as paint
 
 
 class ShapeAppearanceTests(unittest.TestCase):
+    def test_pinhole_depth_is_affine_in_screen_space_even_off_origin(self):
+        mesh = trimesh.creation.box(extents=[2, 3, 1])
+        mesh.apply_translation([7, -11, 4])
+        basis = np.eye(3)
+        params = np.array([0.68, 1.03, -0.02, 0.015])
+        mask = np.full((96, 96), False)
+        mask[10:89, 12:82] = True
+        projected, scale, offset, *_ = paint._fit(mesh.vertices, basis, mask, params)
+        center, inv = paint._lens_coordinates(mesh.vertices, basis, params)
+        ids = [0, 2, 7]
+        bary = np.array([0.24, 0.35, 0.41])
+        original = bary @ mesh.vertices[ids]
+        sample = paint.project_pinhole(original[None, :], center, inv)[0]
+        w = 1 - (mesh.vertices[ids, 2] - center[2]) * inv
+        screen_bary = bary * w / (bary @ w)
+        interpolated = screen_bary @ projected[ids]
+        np.testing.assert_allclose(
+            interpolated[:2], sample[:2] * [scale, -scale] + offset
+        )
+        self.assertAlmostEqual(interpolated[2], sample[2])
+
     def test_native_sdf_only_changes_lighting_normals(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
