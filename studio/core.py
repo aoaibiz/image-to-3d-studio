@@ -48,6 +48,7 @@ HYPOTHESIS_REPORT = "shape-hypothesis.json"
 HYPOTHESIS_GLB = "shape-alternative.glb"
 HYPOTHESIS_MASTER = "shape-alternative.gltf"
 HYPOTHESIS_FILES = {HYPOTHESIS_REPORT, HYPOTHESIS_GLB, HYPOTHESIS_MASTER, "pre-hypothesis.glb"}
+PUBLIC_SHAPE_METHODS = {"source-rim-inferred-cavity-v1"}
 
 
 def _hypothesis_files(out, settings, source_sha, validate):
@@ -74,6 +75,7 @@ def _hypothesis_files(out, settings, source_sha, validate):
             return {}
         report = json.loads((out / HYPOTHESIS_REPORT).read_bytes())
         if (type(report["version"]) is not int or report["version"] != 1 or report["decision"] != decision
+                or report["method"] not in PUBLIC_SHAPE_METHODS
                 or report["source_sha256"] != source_sha or not re.fullmatch("[0-9a-f]{64}", report["implementation_sha256"])):
             return {}
         if decision == "alternative" and (

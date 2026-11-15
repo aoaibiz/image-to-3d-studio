@@ -177,6 +177,7 @@ async function loadResult(job) {
     if (!actualHash || actualHash !== expected) throw Error('表示した GLB と検査結果の SHA が一致しません。');
     if (alternative) {
       document.querySelector('#download').textContent = '推定形状のGLBを保存';
+      document.querySelector('[data-view="top"]').click();
       document.body.classList.remove('hold-no-preview');
       message('元写真に写っていない形状や寸法を補った別案です。回転して確認してください。');
       return;
