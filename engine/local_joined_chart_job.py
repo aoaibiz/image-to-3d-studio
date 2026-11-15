@@ -476,17 +476,17 @@ def run(source, out, base, work, key, original, observation, public, setup, reco
         raise ValueError("The accepted chart identity changed")
     intent = work / "paint-intent.json"
     reservation = {"binding": bind, "chart_id": manifest["chart_id"]}
-    if intent.exists() or slot.exists():
+    if intent.exists():
         _immutable(intent, reservation)
         if not (slot / "receipt.json").is_file():
             raise ValueError("以前の塗装受付の記録が欠落しています。重複送信を停止しました。")
-    else:
-        # Preflight is read-only. Reserve once under the parent's writer lock, before the provider can send.
-        provider.chart_consent(setup, key["pipeline"])
-        readiness = provider.provider.preflight()
-        if not readiness["available"]:
-            raise TurnaroundProviderError(readiness["reason"])
+    elif (slot / "receipt.json").is_file() and _attempts(work):
+        # Retain the independent fence on resume of an older already submitted receipt.
         _immutable(intent, reservation)
+
+    def reserve():
+        _immutable(intent, reservation)
+
     print("requesting inferred paint", flush=True)
     record("guided_provider")
     try:
@@ -497,6 +497,7 @@ def run(source, out, base, work, key, original, observation, public, setup, reco
             work,
             setup=setup,
             pipeline=key["pipeline"],
+            before_submission=reserve,
             **{
                 k: args[k]
                 for k in ["native_model", "foreground", "registration", "observation"]

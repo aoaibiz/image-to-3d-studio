@@ -142,7 +142,16 @@ def _chatgpt_observations(source, work, source_sha, setup, *, pipeline=OBSERVED_
     has_checkpoint=any((work/name).exists() for name in downstream)
     if pipeline == SG_CHART_PIPELINE:
         has_checkpoint |= any((work.parent / name).exists() for name in ("chart-result.json", "model.glb", "generation.json"))
-    if has_checkpoint or (cache / "receipt.json").exists():
+    journal = cache / "receipt.json"
+    if pipeline == SG_CHART_PIPELINE and not has_checkpoint and journal.is_file():
+        # The standing worker lock serializes this move. Keep the no-send evidence for the audit.
+        prior = sg.read_json(journal)
+        if (prior.get("state") == "not_submitted_consent_revoked"
+                and prior.get("source_sha256") == source_sha and prior.get("method") == observer.METHOD_V2
+                and not any((cache / name).exists() for name in ("last-message.json", "events.jsonl"))):
+            archive = Path(tempfile.mkdtemp(prefix="observer-no-send-", dir=work))
+            cache.rename(archive / "journal")
+    if has_checkpoint or journal.exists():
         report = observer.recover_photo(source, cache)
     else:
         _consent(setup, pipeline)
@@ -152,11 +161,11 @@ def _chatgpt_observations(source, work, source_sha, setup, *, pipeline=OBSERVED_
                 _consent(setup, pipeline)
             except StageError:
                 return False
+            if pipeline == SG_CHART_PIPELINE:
+                # Invoked after account/CLI preflight, local preparation and the exclusive inner claim.
+                sg.atomic_json(work / "observation-intent.json", {"source_sha256": source_sha, "pipeline": pipeline})
             return True
 
-        if pipeline == SG_CHART_PIPELINE:
-            # Loss of the observer journal must not create a second remote request.
-            sg.atomic_json(work / "observation-intent.json", {"source_sha256": source_sha, "pipeline": pipeline})
         report = observer.analyze_photo(source, cache, recipe=observer.METHOD_V2,
                                        external_opt_in=True, check_consent=consent_now)
         if report.get("method") != observer.METHOD_V2:

@@ -89,6 +89,18 @@ class LocalJoinedJobTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"missing journal"):
                 real_observer(self.src,work,sg.digest(self.src),self.cfg,pipeline=SG_CHART_PIPELINE)
 
+    def test_no_observer_intent_until_consent_after_local_preflight(self):
+        from engine import codex_photo_observations as observer
+        work=self.root/"observation";work.mkdir()
+        with patch.object(observer,"analyze_photo",side_effect=ValueError("local preflight")) as analyze:
+            for _ in range(2):
+                with self.assertRaisesRegex(ValueError,"local preflight"):
+                    real_observer(self.src,work,sg.digest(self.src),self.cfg,pipeline=SG_CHART_PIPELINE)
+            self.assertEqual(analyze.call_count,2)
+            self.assertFalse((work/"observation-intent.json").exists())
+            self.assertTrue(analyze.call_args.kwargs["check_consent"]())
+            self.assertTrue((work/"observation-intent.json").exists())
+
     def test_lost_remote_slot_never_admits_second_paint(self):
         def guides(output_dir,**kwargs):
             output_dir.mkdir();(output_dir/"guide.png").write_bytes(b"guide")
@@ -96,6 +108,7 @@ class LocalJoinedJobTests(unittest.TestCase):
         def interrupt(a,b,c,work,**kwargs):
             slot=work/"guided-paint";slot.mkdir()
             sg.atomic_json(slot/"receipt.json",{"attempts":1,"state":"submitted"})
+            kwargs["before_submission"]()
             raise KeyboardInterrupt
         with patch.object(chart,"prepare_chart",side_effect=guides),patch.object(provider,"generate_chart",side_effect=interrupt) as remote:
             with self.assertRaises(KeyboardInterrupt): self.run_job()

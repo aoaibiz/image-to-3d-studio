@@ -167,6 +167,7 @@ def generate_chart(
     observation,
     setup,
     pipeline=SF3D_OBSERVED_PIPELINE,
+    before_submission=None,
 ):
     """Shares the physical guided-paint reservation with the two-view recipe."""
     chart_consent(setup, pipeline)
@@ -178,7 +179,19 @@ def generate_chart(
         attachment = Path(isolated) / "reference.png"
         identity = _identity(manifest, source, guide, attachment, pipeline)
         if work.exists():
-            return _recover(work, identity)
+            prior = json.loads(provider._bytes(work / "receipt.json", 32768))
+            _matches(prior, identity)
+            if (pipeline == SG_CHART_PIPELINE
+                    and before_submission is not None
+                    and prior.get("state") == "blocked_before_submission"
+                    and prior.get("attempts") == 0 and prior.get("thread_id") is None
+                    and not (work.parent / "paint-intent.json").exists()
+                    and not (work / "sheet.png").exists()):
+                # No external process was started; preserve the old journal and claim afresh.
+                archive = Path(tempfile.mkdtemp(prefix="paint-no-send-", dir=work.parent))
+                work.rename(archive / "journal")
+            else:
+                return _recover(work, identity)
         confirm_chart(
             source_photo=input_path,
             native_model=native_model,
@@ -206,6 +219,11 @@ def generate_chart(
             started_unix=time.time(),
         )
         provider._record(work, receipt)
+        def confirm_setup(config, selected):
+            chart_consent(config, selected)
+            if before_submission is not None:
+                before_submission()
+
         return provider._run_image_once(
             work,
             receipt,
@@ -213,5 +231,5 @@ def generate_chart(
             PROMPT,
             setup,
             pipeline,
-            consent_check=chart_consent,
+            consent_check=confirm_setup,
         )
