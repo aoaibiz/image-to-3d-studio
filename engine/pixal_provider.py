@@ -32,6 +32,50 @@ class RemoteFailure(RuntimeError):
     """Terminal failure of the one permitted remote generation."""
 
 
+class QuotaExceeded(RemoteFailure):
+    """The anonymous provider declined this event before it could run."""
+
+    def __init__(self, requested, available, retry_after=None):
+        super().__init__("Anonymous ZeroGPU allowance exhausted.")
+        self.details = {"requested_seconds": requested, "available_seconds": available,
+                        "retry_after_seconds": retry_after}
+
+
+def _remote_failure(value):
+    # Accept only the known provider error signature. Opaque remote text stays private.
+    if isinstance(value, str):
+        value = value.removeprefix("Pixal3D event ended in error:").strip()
+        if value.startswith("{"):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                value = None
+    if isinstance(value, dict):
+        value = value.get("error")
+    if isinstance(value, str):
+        match = re.match(r"^You have exceeded your ZeroGPU quota \((\d{1,6})s requested vs\. (\d{1,6})s left\)\.", value)
+        if match:
+            requested, available = map(int, match.groups())
+            delay = re.match(r" Try again in (\d{1,3}):([0-5]\d):([0-5]\d)\.", value[match.end():])
+            seconds = None
+            if delay:
+                h, m, s = map(int, delay.groups())
+                seconds = h * 3600 + m * 60 + s or None
+            if 0 <= available < requested <= 3600:
+                return QuotaExceeded(requested, available, seconds)
+    return RemoteFailure("Pixal3D ended this event without a model.")
+
+
+def _saved_failure(state):
+    if state.get("failure_kind") == "anonymous_quota":
+        details = state.get("quota", {})
+        needed, free, delay = (details.get(k) for k in ("requested_seconds", "available_seconds", "retry_after_seconds"))
+        if (type(needed) is int and type(free) is int and 0 <= free < needed <= 3600
+                and (delay is None or type(delay) is int and 0 < delay < 3600000)):
+            return QuotaExceeded(needed, free, delay)
+    return _remote_failure(state.get("error"))
+
+
 def _session():
     s = requests.Session()
     s.trust_env = False  # Do not attach local account credentials or proxy authorization.
@@ -91,8 +135,7 @@ def _asset(result):
         raise ValueError("Unexpected Pixal3D event payload.")
     record = json.loads(result[0]) if isinstance(result[0], str) else result[0]
     if record.get("ok") is False:
-        msg = str(record.get("error", "Remote generation error"))[:400]
-        raise RemoteFailure(msg)
+        raise _remote_failure(record)
     a = record["asset"]
     ident = a["id"]
     if not isinstance(ident, str) or not re.fullmatch(r"[a-f0-9]{12}", ident):
@@ -126,7 +169,7 @@ def _wait(session, event):
             if line.startswith(b"event:"):
                 kind = line[6:].strip().decode("ascii")
             elif line.startswith(b"data:") and kind == "error":
-                raise RemoteFailure("Pixal3D event ended in error: " + line[5:405].decode("utf-8", "replace"))
+                raise _remote_failure(line[5:4101].decode("utf-8", "replace"))
             elif line.startswith(b"data:") and kind == "complete":
                 return _asset(json.loads(line[5:]))
     raise Pending("The event stream ended before completion. Keep the existing job.")
@@ -235,7 +278,7 @@ def generate(source, work, *, allow_public_cc0=False, expected_source_sha256=Non
                          seed=SEED, resolution=1024, quality_setting="balanced", quality="needs_review")
             save("prepared")
         if state["state"] == "failed":
-            raise RemoteFailure(state["error"])
+            raise _saved_failure(state)
         if state["state"] in {"upload_unknown", "submission_unknown"}:
             raise Pending("An earlier POST has no confirmed result. Do not submit again.")
         if state["state"] in {"prepared", "uploaded"}:
@@ -291,7 +334,10 @@ def generate(source, work, *, allow_public_cc0=False, expected_source_sha256=Non
                  artifacts={"input.png": state["upload_sha256"], "model.glb": mat["sha256"]}, finished_at=time.time())
             return state
         except RemoteFailure as exc:
-            save("failed", error=str(exc))
+            if isinstance(exc, QuotaExceeded):
+                save("failed", failure_kind="anonymous_quota", quota=exc.details)
+            else:
+                save("failed", failure_kind="remote_failure", error="Provider event failed.")
             raise
         except (requests.RequestException, RuntimeError, ValueError, KeyError, TypeError) as exc:
             if state["state"] in {"upload_unknown","submission_unknown","accepted"}:

@@ -142,6 +142,12 @@ def _shape_notice(line):
     if not isinstance(event, dict):
         return None, None
     kind, stage = event.get("event"), event.get("stage")
+    if kind == "studio_error" and event.get("code") == "pixal_quota":
+        needed, free, delay = (event.get(k) for k in ("requested_seconds", "available_seconds", "retry_after_seconds"))
+        if type(needed) is int and type(free) is int and 0 <= free < needed <= 3600:
+            wait = f"提供元の回復目安は{delay}秒後です。" if type(delay) is int and 0 < delay < 3600000 else "回復時刻は未確認です。"
+            return None, f"匿名ZeroGPUの残りは{free}秒で、生成に必要な{needed}秒に届きません。{wait} この受付は終了し、自動再送はありません。"
+        return None, SHAPE_ERRORS["pixal_error"]
     if kind == "studio_error" and isinstance(event.get("code"), str):
         return None, SHAPE_ERRORS.get(event["code"])
     if kind == "waiting_for_memory" and stage in ("encode", "denoise", "surface"):

@@ -13,7 +13,7 @@ from engine import pixal_provider, pixal_shape_job as job
 from engine.pipeline import PIXAL_PIPELINE
 from quality.test_sf3d_provider import fixture_glb, png
 from studio.configure import configure, read_pipeline
-from studio.core import JobCore, PipelineConflict
+from studio.core import JobCore, PipelineConflict, _shape_notice
 from studio.server import space_engine_info
 
 
@@ -105,3 +105,20 @@ class PixalRouteTests(unittest.TestCase):
             self.assertFalse(job.valid(self.out, result))
             with self.assertRaises((OSError, ValueError)):
                 job.run(self.source, self.out, setup=self.setup, public_cc0_sha256=self.sha)
+
+    def test_quota_failure_has_safe_numbers_only_and_zero_reset_is_unknown(self):
+        for wait, seconds in [("0:00:00", None), ("2:01:04", 7264), ("unknown", None)]:
+            message = f"You have exceeded your ZeroGPU quota (120s requested vs. 0s left). Try again in {wait}. PRIVATE"
+            old = {"error": "Pixal3D event ended in error: " + json.dumps({"error": message})}
+            failure = pixal_provider._saved_failure(old)
+            self.assertIsInstance(failure, pixal_provider.QuotaExceeded)
+            self.assertEqual(failure.details["retry_after_seconds"], seconds)
+            state = {"failure_kind": "anonymous_quota", "quota": failure.details}
+            self.assertEqual(pixal_provider._saved_failure(state).details, failure.details)
+            text = _shape_notice(json.dumps({"event": "studio_error", "code": "pixal_quota", **failure.details}))[1]
+            self.assertIn("残りは0秒", text)
+            self.assertIn("必要な120秒", text)
+            self.assertIn("回復時刻は未確認" if seconds is None else "7264秒後", text)
+            self.assertNotIn("PRIVATE", text)
+        self.assertNotIsInstance(pixal_provider._remote_failure("unrelated PRIVATE"), pixal_provider.QuotaExceeded)
+        self.assertNotIn("PRIVATE", str(pixal_provider._remote_failure("unrelated PRIVATE")))

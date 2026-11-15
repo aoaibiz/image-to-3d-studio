@@ -135,6 +135,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     try:
         run(args.source, args.out, setup=args.setup, public_cc0_sha256=args.public_cc0_sha256)
+    except pixal_provider.QuotaExceeded as exc:
+        files.emit("studio_error", code="pixal_quota", **exc.details)
+        raise SystemExit(1)
     except (KeyError, RuntimeError, ValueError, OSError) as exc:
         code = "pixal_consent" if isinstance(exc, ConsentError) else "pixal_pending" if isinstance(exc, pixal_provider.Pending) else "pixal_error"
         files.emit("studio_error", code=code)
