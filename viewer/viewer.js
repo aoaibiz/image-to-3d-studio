@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const viewport = document.querySelector('#viewport');
 const status = document.querySelector('#status');
@@ -21,17 +22,63 @@ fill.position.set(-4, 2, -5);
 scene.add(hemisphere, key, fill);
 let model = null, radius = 1, source = null, sourceURL = null, sha = '';
 let view = 'front', mode = 'material', lighting = 'studio', selection = 0;
+let dessertEnvironment = null, contactShadow = null;
 const center = new THREE.Vector3();
 const directions = {
+  home: [.13, .31, 1],
   front: [0, 0, 1], back: [0, 0, -1], left: [-1, 0, 0], right: [1, 0, 0],
   top: [0, 1, 0], bottom: [0, -1, 0], 'front-right': [1, .35, 1],
   'front-left': [-1, .35, 1], 'back-right': [1, .35, -1], 'back-left': [-1, .35, -1]
 };
+function setupBackdrop(box, size) {
+  const dessert = model.userData.imageTo3dProfile === 'layered-dessert';
+  if (dessert && !dessertEnvironment) {
+    const room = new RoomEnvironment(), generator = new THREE.PMREMGenerator(renderer);
+    try {
+      dessertEnvironment = generator.fromScene(room, .025, .1, 100, { size: 64 });
+    } finally {
+      generator.dispose();
+      room.dispose();
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    const gradient = ctx.createRadialGradient(64, 64, 2, 64, 64, 64);
+    gradient.addColorStop(0, 'rgba(72,65,57,.25)');
+    gradient.addColorStop(.45, 'rgba(72,65,57,.12)');
+    gradient.addColorStop(1, 'rgba(72,65,57,0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 128, 128);
+    const material = new THREE.MeshBasicMaterial({
+      map: new THREE.CanvasTexture(canvas), transparent: true, depthWrite: false, toneMapped: false,
+    });
+    contactShadow = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+    contactShadow.rotation.x = -Math.PI / 2;
+    scene.add(contactShadow);
+  }
+  if (dessert) {
+    scene.environment = dessertEnvironment.texture;
+    contactShadow.position.set(center.x, box.min.y - size.y * .001, center.z);
+    contactShadow.scale.set(size.x * .48, size.z * .48, 1);
+  } else if (dessertEnvironment) {
+    scene.environment = null;
+    dessertEnvironment.dispose();
+    dessertEnvironment = null;
+    scene.remove(contactShadow);
+    disposeObject(contactShadow);
+    contactShadow = null;
+  }
+  scene.environmentIntensity = dessert ? .17 : 1;
+  hemisphere.groundColor.setHex(dessert ? 0xb3aaa0 : 0x6b756d);
+  renderer.setClearColor(dessert ? 0xeee9e1 : 0xdce1dc);
+  setLighting(lighting);
+}
+function homeView() { return dessertEnvironment ? 'home' : 'front'; }
 function render() { renderer.render(scene, camera); }
 function resize() {
   const width = viewport.clientWidth, height = viewport.clientHeight;
   renderer.setSize(width, height, false);
-  const span = radius * 1.5, aspect = width / height;
+  const span = radius * (dessertEnvironment ? 1.15 : 1.5), aspect = width / height;
   camera.left = -span * aspect; camera.right = span * aspect;
   camera.top = span; camera.bottom = -span;
   camera.updateProjectionMatrix(); render();
@@ -67,7 +114,8 @@ function setMode(next) {
 }
 function setLighting(next) {
   lighting = next;
-  const values = next === 'soft' ? [2.6, .7, .5] : next === 'side' ? [.6, 3, .2] : [2, 2.2, .8];
+  const studio = dessertEnvironment ? [1.42, 1.68, .65] : [2, 2.2, .8];
+  const values = next === 'soft' ? [2.6, .7, .5] : next === 'side' ? [.6, 3, .2] : studio;
   [hemisphere.intensity, key.intensity, fill.intensity] = values;
   key.position.set(...(next === 'side' ? [6, 2, 0] : [4, 8, 6]));
   render(); updateState();
@@ -77,7 +125,7 @@ function updateState() {
 }
 // Numeric camera observations are exposed for repeatable browser testing.
 window.viewerTextureCount = () => { let count = 0; model?.traverse(object => { const materials = object.userData.originalMaterial || object.material; for (const material of (Array.isArray(materials) ? materials : [materials])) if (material?.map?.image) count++; }); return count; };
-window.viewerCamera = () => ({ azimuth: controls.getAzimuthalAngle(), zoom: camera.zoom, target: controls.target.toArray() });
+window.viewerCamera = () => ({ azimuth: controls.getAzimuthalAngle(), polar: controls.getPolarAngle(), zoom: camera.zoom, target: controls.target.toArray() });
 function disposeObject(root) {
   root?.traverse(object => {
     object.geometry?.dispose(); object.userData.override?.dispose();
@@ -125,13 +173,14 @@ async function openFile(file) {
     if (model) { scene.remove(model); disposeObject(model); }
     model = gltf.scene; scene.add(model); box.getCenter(center);
     radius = Math.max(size.x, size.y, size.z) / 2;
+    setupBackdrop(box, size);
     source = file; sha = nextHash;
     if (sourceURL) URL.revokeObjectURL(sourceURL);
     sourceURL = URL.createObjectURL(file);
     const link = document.querySelector('#download');
     link.href = sourceURL; link.download = file.name; link.hidden = false;
     document.querySelector('#hash').textContent = 'SHA-256: ' + sha;
-    setMode(mode); setView('front');
+    setMode(mode); setView(homeView());
     status.textContent = `${file.name} を表示中。正面は +Z。SHA-256: ${sha}`;
     return sha;
   } catch (error) {
@@ -143,7 +192,7 @@ document.querySelector('#file').addEventListener('change', event => openFile(eve
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => setView(button.dataset.view)));
 document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => setMode(button.dataset.mode)));
 document.querySelectorAll('[data-light]').forEach(button => button.addEventListener('click', () => setLighting(button.dataset.light)));
-document.querySelector('#reset').addEventListener('click', () => setView('front'));
+document.querySelector('#reset').addEventListener('click', () => setView(homeView()));
 function markCustom() { view = 'custom'; updateState(); }
 renderer.domElement.addEventListener('pointerdown', markCustom);
 renderer.domElement.addEventListener('wheel', markCustom);

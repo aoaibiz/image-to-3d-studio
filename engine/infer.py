@@ -30,6 +30,7 @@ dino_image.hf_hub_download = lambda **kwargs: str(
 from tsr.utils import remove_background, resize_foreground  # noqa: E402
 from engine.auto_finish import prepare_source, finish_generated  # noqa: E402
 from engine.output_metadata import finalise_metadata  # noqa: E402
+from engine.pipeline import LEGACY_PIPELINE, PIPELINE  # noqa: E402
 
 
 def sha(path):
@@ -47,6 +48,8 @@ def new_attempt(out):
 
 
 def preprocess(im, out, no_remove_bg, foreground_path):
+    if max(im.size) > 4096:
+        im.thumbnail((4096, 4096), Image.Resampling.LANCZOS)
     im = im.convert("RGBA")
     if im.getextrema()[3][0] < 255:
         im = resize_foreground(im, 0.85)
@@ -157,6 +160,7 @@ def main():
     p.add_argument("--resolution", type=int, default=64, choices=[64, 96, 128])
     p.add_argument("--texture-size", type=int, default=512, choices=[256, 512, 1024])
     p.add_argument("--no-remove-bg", action="store_true")
+    p.add_argument("--pipeline", choices=(LEGACY_PIPELINE, PIPELINE))
     a = p.parse_args()
     inp = Path(a.image).resolve()
     out = Path(a.output).resolve()
@@ -174,9 +178,15 @@ def main():
     checkpoint = None
     try:
         saved = json.loads(checkpoint_path.read_text(encoding="utf8"))
+        saved_pipeline = saved.get("pipeline", LEGACY_PIPELINE)
+        if saved_pipeline not in (LEGACY_PIPELINE, PIPELINE):
+            raise ValueError("unknown checkpoint pipeline")
+        if a.pipeline is None:
+            a.pipeline = saved_pipeline
         snapshot = out / saved["snapshot"]
         if (
             saved["input_sha256"] == sha(inp)
+            and saved.get("pipeline", LEGACY_PIPELINE) == a.pipeline
             and saved["resolution"] == a.resolution
             and saved["texture_size"] == a.texture_size
             and saved["no_remove_bg"] == a.no_remove_bg
@@ -198,6 +208,8 @@ def main():
             "保存済みの仕上げ途中データが入力または設定と一致しません。新しい出力先を指定してください。"
         )
     resumed = checkpoint is not None
+    if a.pipeline is None:
+        a.pipeline = PIPELINE
     if checkpoint is None:
         raw_dir = new_attempt(out)
         foreground = raw_dir / "foreground.png"
@@ -212,7 +224,7 @@ def main():
         print("preprocessing", flush=True)
         print("selecting source", flush=True)
         with Image.open(inp) as source:
-            selected, source_info = prepare_source(source.copy())
+            selected, source_info = prepare_source(source.copy(), a.pipeline)
         if not isinstance(selected, Image.Image) or not isinstance(source_info, dict):
             raise ValueError("invalid source selection")
         im = preprocess(selected, out, a.no_remove_bg, foreground)
@@ -359,6 +371,7 @@ def main():
                 shutil.copy2(src, snapshot / name)
         shutil.copy2(foreground, snapshot / "foreground.png")
         checkpoint = {
+            "pipeline": a.pipeline,
             "input_sha256": sha(inp),
             "resolution": a.resolution,
             "texture_size": a.texture_size,
@@ -394,7 +407,11 @@ def main():
     print("finishing model", flush=True)
     finishing_start = time.time()
     finish_info = finish_generated(
-        out, snapshot / "foreground.png", meta["source_selection"]
+        out,
+        snapshot / "foreground.png",
+        meta["source_selection"],
+        original=inp,
+        pipeline=a.pipeline,
     )
     if not isinstance(finish_info, dict):
         raise ValueError("invalid finish result")
@@ -431,7 +448,7 @@ def main():
         if (out / name).is_file()
     }
     meta["auto_finish_complete"] = True
-    meta["pipeline"] = "triposr-auto-finish-v1"
+    meta["pipeline"] = a.pipeline
     image_sizes = {}
     for name in ["texture.png"] + material_files:
         with Image.open(out / name) as image:

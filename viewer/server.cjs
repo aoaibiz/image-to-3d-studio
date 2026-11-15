@@ -8,6 +8,7 @@ const routes = new Map([
   ['/node_modules/three/build/three.core.js', ['node_modules/three/build/three.core.js', 'text/javascript; charset=utf-8']],
   ['/node_modules/three/examples/jsm/loaders/GLTFLoader.js', ['node_modules/three/examples/jsm/loaders/GLTFLoader.js', 'text/javascript; charset=utf-8']],
   ['/node_modules/three/examples/jsm/controls/OrbitControls.js', ['node_modules/three/examples/jsm/controls/OrbitControls.js', 'text/javascript; charset=utf-8']],
+  ['/node_modules/three/examples/jsm/environments/RoomEnvironment.js', ['node_modules/three/examples/jsm/environments/RoomEnvironment.js', 'text/javascript; charset=utf-8']],
   ['/node_modules/three/examples/jsm/utils/BufferGeometryUtils.js', ['node_modules/three/examples/jsm/utils/BufferGeometryUtils.js', 'text/javascript; charset=utf-8']]
 ]);
 const port = process.env.PORT === undefined ? 4173 : Number(process.env.PORT);

@@ -8,6 +8,58 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
+from engine.pipeline import PIPELINE
+
+
+def _dessert_foreground(image, measurements):
+    """Isolate the measured subject for the neural baseline without including the table."""
+    if max(image.size) > 1280:
+        image = image.copy()
+        image.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+    width, height = image.size
+    rim_x, rim_y, rim_radius = measurements["rim"]
+    foot_x, foot_y, _ = measurements["foot"]
+    left, top, right, bottom = measurements["cream_bbox"]
+    silhouette = np.zeros((height, width), dtype=np.uint8)
+
+    def polygon(points):
+        px = np.rint(np.asarray(points) * [width, height]).astype(np.int32)
+        cv2.fillPoly(silhouette, [px], 255)
+
+    bowl = []
+    for h, radius in measurements["glass_profile"]:
+        center = foot_x + h * (rim_x - foot_x)
+        y = foot_y + h * (rim_y - foot_y)
+        bowl.append(((center - radius, y), (center + radius, y)))
+    polygon([p[0] for p in bowl] + [p[1] for p in reversed(bowl)])
+    # The mound narrows near the top. Berries extend beyond its sides.
+    mx, rx = (left + right) / 2, (right - left) / 2
+    polygon(
+        [
+            (mx - 0.24 * rx, top),
+            (mx + 0.24 * rx, top),
+            (right, top + 0.74 * (bottom - top)),
+            (right, bottom),
+            (rim_x + rim_radius, rim_y),
+            (rim_x - rim_radius, rim_y),
+            (left, bottom),
+            (left, top + 0.74 * (bottom - top)),
+        ]
+    )
+    for berry in measurements["berries"]:
+        center = tuple(
+            np.rint(np.asarray(berry["center"]) * [width, height]).astype(int)
+        )
+        axes = tuple(
+            np.maximum(1, np.rint(np.asarray(berry["radii"]) * [width, height])).astype(
+                int
+            )
+        )
+        cv2.ellipse(silhouette, center, axes, 0, 0, 360, 255, -1)
+    arr = np.asarray(image).copy()
+    arr[:, :, 3] = np.minimum(arr[:, :, 3], silhouette)
+    return Image.fromarray(arr)
+
 
 def _sheet_components(image):
     preview = image.copy()
@@ -92,7 +144,7 @@ def _sheet_components(image):
     return result
 
 
-def prepare_source(pil_input):
+def prepare_source(pil_input, pipeline=PIPELINE):
     image = ImageOps.exif_transpose(pil_input).convert("RGBA")
     rows = _sheet_components(image)
     info = {
@@ -101,6 +153,20 @@ def prepare_source(pil_input):
         "selected_bbox": [0, 0, image.width, image.height],
     }
     if not rows:
+        if pipeline == PIPELINE:
+            from engine.dessert_measure import measure_dessert
+
+            measured = measure_dessert(image)
+            if measured is not None:
+                info.update(
+                    method="measured layered dessert in original image",
+                    selected_bbox=[
+                        round(v * image.size[i % 2])
+                        for i, v in enumerate(measured["bbox"])
+                    ],
+                    dessert=measured,
+                )
+                return _dessert_foreground(image, measured), info
         return image, info
     center = image.width / 2
     box = min(rows[0], key=lambda b: abs((b[0] + b[2]) / 2 - center))
@@ -136,7 +202,9 @@ def prepare_source(pil_input):
     return crop, info
 
 
-def finish_generated(out: Path, foreground: Path, source_info: dict):
+def finish_generated(
+    out: Path, foreground: Path, source_info: dict, original=None, pipeline=PIPELINE
+):
     from engine.figure_details import add_detected_details
     from engine.figure_shape import build_figure
     from engine.figure_paint import paint_figure
@@ -145,8 +213,22 @@ def finish_generated(out: Path, foreground: Path, source_info: dict):
 
     with Image.open(foreground) as source:
         rgba = source.convert("RGBA")
-    figure = build_figure(rgba)
-    if figure is not None:
+    dessert = source_info.get("dessert")
+    if dessert is not None:
+        import trimesh
+        from engine.dessert_form import add_dessert_glass
+        from engine.dessert_toppings import add_dessert_toppings
+
+        with Image.open(original) as im:
+            observed = ImageOps.exif_transpose(im).convert("RGBA")
+        if list(observed.size) != list(dessert["image_size"]):
+            raise ValueError("Dessert measurements do not match the source image")
+        scene = trimesh.Scene(metadata={"imageTo3dProfile": "layered-dessert"})
+        measurements = dict(dessert)
+        measurements["vessel"] = add_dessert_glass(scene, dessert, observed)
+        measurements["toppings"] = add_dessert_toppings(scene, dessert, observed)
+        profile = "layered-dessert"
+    elif (figure := build_figure(rgba)) is not None:
         shape, measurements = figure
         scene = paint_figure(shape, rgba, measurements)
         scene = add_detected_details(scene, rgba, measurements)
@@ -154,17 +236,23 @@ def finish_generated(out: Path, foreground: Path, source_info: dict):
             name.startswith("detected_whisker_") for name in scene.geometry
         )
         profile = "standing-figure"
+    elif (vehicle := build_vehicle(rgba)) is not None:
+        scene, measurements = vehicle
+        profile = "wheeled-vehicle"
     else:
-        vehicle = build_vehicle(rgba)
-        if vehicle is None:
+        scene, measurements = None, {}
+        if pipeline == PIPELINE:
+            from engine.general_finish import build_general
+
+            scene, measurements = build_general(out / "model.glb", rgba)
+        if scene is None:
             embed_master(out / "model.glb", out / "editable.gltf")
             return {
                 "finish_profile": "inferred-mesh",
-                "finish_measurements": {},
-                "finish_reason": "No supported set of landmarks detected; review the inferred mesh.",
+                "finish_measurements": measurements,
+                "finish_reason": "Retained the inferred mesh; review its shape and appearance.",
             }
-        scene, measurements = vehicle
-        profile = "wheeled-vehicle"
+        profile = "image-guided-general"
     with tempfile.TemporaryDirectory(dir=out, prefix="measured-") as tmp:
         stage = Path(tmp)
         export_finished(scene, stage)
@@ -173,6 +261,10 @@ def finish_generated(out: Path, foreground: Path, source_info: dict):
     return {
         "finish_profile": profile,
         "finish_measurements": measurements,
-        "finish_geometry_source": "Analytic shape from observed image landmarks with inferred hidden surfaces; the neural baseline is retained separately.",
+        "finish_geometry_source": (
+            "Image-conditioned TripoSR mesh refined with silhouette and feature preservation."
+            if profile == "image-guided-general"
+            else "Analytic shape from observed image landmarks with inferred hidden surfaces; the neural baseline is retained separately."
+        ),
         "finished_faces": sum(len(m.faces) for m in scene.geometry.values()),
     }

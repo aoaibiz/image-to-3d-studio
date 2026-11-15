@@ -8,9 +8,19 @@ import trimesh
 from PIL import Image, ImageDraw
 
 from engine.auto_finish import finish_generated, prepare_source
+from engine.pipeline import LEGACY_PIPELINE
+from unittest.mock import patch
 
 
 class SelectionTests(unittest.TestCase):
+    def test_legacy_jobs_do_not_acquire_a_new_dessert_finish(self):
+        image = Image.new("RGB", (200, 300), "white")
+        with patch(
+            "engine.dessert_measure.measure_dessert", side_effect=AssertionError
+        ):
+            _, selection = prepare_source(image, LEGACY_PIPELINE)
+        self.assertNotIn("dessert", selection)
+
     def grid(self, colors):
         image = Image.new("RGB", (260, 200), "white")
         draw = ImageDraw.Draw(image)

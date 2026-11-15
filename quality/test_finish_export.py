@@ -1,3 +1,4 @@
+import base64
 import json
 import sys
 import tempfile
@@ -79,6 +80,100 @@ class ExportTest(unittest.TestCase):
             )
             embedded = json.loads((out / "editable.gltf").read_text())
             self.assertTrue(embedded["buffers"][0]["uri"].startswith("data:"))
+
+    def test_factor_only_glass_without_uv(self):
+        mesh = trimesh.creation.box()
+        mesh.visual = trimesh.visual.texture.TextureVisuals(
+            material=trimesh.visual.material.PBRMaterial(
+                name="glass",
+                baseColorFactor=[128, 255, 255, 64],
+                alphaMode="BLEND",
+                roughnessFactor=0.12,
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            export_finished(mesh, folder)
+            self.assertIsNone(mesh.visual.uv)
+            doc = json.loads((folder / "editable.gltf").read_text())
+            index = doc["meshes"][0]["primitives"][0]["material"]
+            self.assertEqual(doc["materials"][index]["alphaMode"], "BLEND")
+            self.assertAlmostEqual(
+                doc["materials"][index]["pbrMetallicRoughness"]["baseColorFactor"][3],
+                64 / 255,
+            )
+            self.assertIn("d 0.250980392", (folder / "material.mtl").read_text())
+            with Image.open(folder / "material_0.png") as image:
+                self.assertEqual(image.getpixel((0, 0)), (188, 255, 255))
+            ply = trimesh.load(folder / "editable.ply", process=False)
+            np.testing.assert_equal(ply.visual.vertex_colors[0], [188, 255, 255, 64])
+
+    def test_opacity_map_and_linear_color_factor(self):
+        image = Image.new("RGBA", (2, 1))
+        image.putdata([(188, 100, 200, 255), (188, 100, 200, 0)])
+        for mode, opacity in (
+            ("OPAQUE", [255, 255]),
+            ("BLEND", [128, 0]),
+            ("MASK", [255, 0]),
+        ):
+            mesh = trimesh.creation.box()
+            uv = np.resize([[0.25, 0.0], [1.75, 0.0]], (len(mesh.vertices), 2))
+            mesh.visual = trimesh.visual.texture.TextureVisuals(
+                uv=uv,
+                material=trimesh.visual.material.PBRMaterial(
+                    baseColorTexture=image,
+                    baseColorFactor=[128, 255, 255, 128],
+                    alphaMode=mode,
+                    alphaCutoff=0.4,
+                ),
+            )
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                folder = Path(tmp)
+                export_finished(mesh, folder)
+                mtl = (folder / "material.mtl").read_text()
+                ply = trimesh.load(folder / "editable.ply", process=False)
+                self.assertEqual(
+                    sorted(set(ply.visual.vertex_colors[:, 3])), sorted(set(opacity))
+                )
+                np.testing.assert_equal(
+                    ply.visual.vertex_colors[0, :3], [138, 100, 200]
+                )
+                if mode == "OPAQUE":
+                    self.assertNotIn("map_d ", mtl)
+                else:
+                    self.assertIn("map_d material_1.png", mtl)
+                    with Image.open(folder / "material_1.png") as alpha:
+                        self.assertEqual(list(alpha.getdata()), opacity)
+
+    def test_tangent_frame_preserves_handedness_and_normal_map(self):
+        vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        mesh = trimesh.Trimesh(vertices=vertices, faces=[[0, 1, 2]], process=False)
+        mesh.visual = trimesh.visual.texture.TextureVisuals(
+            uv=vertices[:, :2].copy(),
+            material=trimesh.visual.material.PBRMaterial(
+                normalTexture=Image.new("RGB", (2, 2), (128, 128, 255)),
+                metallicRoughnessTexture=Image.new("RGB", (2, 2), (0, 155, 0)),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            export_finished(mesh, folder)
+            doc = json.loads((folder / "editable.gltf").read_text())
+            prim = doc["meshes"][0]["primitives"][0]
+            mat = doc["materials"][prim["material"]]
+            self.assertIn("normalTexture", mat)
+            self.assertIn("metallicRoughnessTexture", mat["pbrMetallicRoughness"])
+            acc = doc["accessors"][prim["attributes"]["TANGENT"]]
+            view = doc["bufferViews"][acc["bufferView"]]
+            data = base64.b64decode(doc["buffers"][0]["uri"].split(",", 1)[1])
+            frames = np.frombuffer(
+                data,
+                dtype="<f4",
+                count=acc["count"] * 4,
+                offset=view.get("byteOffset", 0) + acc.get("byteOffset", 0),
+            ).reshape(-1, 4)
+            np.testing.assert_allclose(frames, np.tile([1, 0, 0, -1], (3, 1)))
+            self.assertNotIn("TANGENT", mesh.vertex_attributes)
 
     def test_reject_bad_master(self):
         with tempfile.TemporaryDirectory() as tmp:

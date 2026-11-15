@@ -4,6 +4,7 @@ import math
 import os
 from pathlib import Path
 from .process_group import ProcessGroup
+from engine.pipeline import LEGACY_PIPELINE, PIPELINE
 import queue
 import re
 import sqlite3
@@ -145,6 +146,11 @@ class JobCore:
                 "manifest.json",
             ]
             if folder.exists():
+                names.extend(
+                    p.name
+                    for p in folder.glob("*_appearance-comparison.jpg")
+                    if re.fullmatch(r"[0-9a-f]{64}_appearance-comparison\.jpg", p.name)
+                )
                 names += [
                     p.name
                     for p in folder.glob("*.png")
@@ -430,7 +436,7 @@ class JobCore:
                             "resolution": 96,
                             "texture_size": 1024,
                             "auto_finish": True,
-                            "pipeline": "triposr-auto-finish-v1",
+                            "pipeline": PIPELINE,
                         }
                     ),
                 ),
@@ -713,6 +719,8 @@ class JobCore:
                     str(config["resolution"]),
                     "--texture-size",
                     str(config["texture_size"]),
+                    "--pipeline",
+                    config.get("pipeline", LEGACY_PIPELINE),
                 ],
                 "starting",
             )
@@ -777,6 +785,31 @@ class JobCore:
             or not all((out / name).is_file() for name in manifest["files"])
         ):
             raise RuntimeError("proof hash mismatch")
+        if config.get("pipeline") == PIPELINE:
+            # Resolve only a baseline created by this job, including after recovery.
+            raw = settings.get("raw_export", "")
+            if re.fullmatch(r"raw-export/[0-9a-f]{32}", raw):
+                source = out / raw / "foreground.png"
+                report = json.loads(
+                    self._command(
+                        job_id,
+                        [
+                            py,
+                            str(self.root / "quality" / "general_appearance.py"),
+                            str(source),
+                            str(out),
+                            digest,
+                        ],
+                        "appearance",
+                    )
+                )
+                inspection["image_comparison"] = report
+            else:
+                inspection["image_comparison"] = {
+                    "status": "unknown",
+                    "reason": "No measured foreground.",
+                }
+            self._atomic_json(out / "inspection.json", inspection)
 
     def close(self):
         with self.changed:

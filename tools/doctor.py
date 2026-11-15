@@ -12,6 +12,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WEIGHT_SHA256 = "429e2c6b22a0923967459de24d67f05962b235f79cde6b032aa7ed2ffcd970ee"
+U2NET_SHA256 = "8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491"
+
+# Importing rembg starts pymatting's Numba compilation on a new installation.
+# Check the installed session and native execution provider without compiling it.
+RUNTIME_PROBE = """
+from importlib.util import find_spec
+from pathlib import Path
+import torch, PIL, xatlas, trimesh, skimage, onnxruntime
+rembg = find_spec('rembg')
+if not rembg or not rembg.origin or not (Path(rembg.origin).parent / 'sessions/u2net.py').is_file():
+    raise SystemExit('rembg U2Net session is missing')
+if 'CPUExecutionProvider' not in onnxruntime.get_available_providers():
+    raise SystemExit('ONNX Runtime CPU provider is missing')
+print(torch.__version__)
+"""
 
 
 def local_memory():
@@ -58,9 +73,23 @@ def gpu_inventory():
         return None
 
 
+def verify_weight(path, expected, check_hash):
+    if not path.is_file():
+        return "missing"
+    if not check_hash:
+        return "unchecked"
+    try:
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    except OSError:
+        return "unreadable"
+    return "verified" if digest == expected else "mismatch"
+
+
 def diagnose(check_hash=False):
     runtime = ROOT / ".runtime"
     weights = runtime / "model" / "model.ckpt"
+    foreground_weights = runtime / "u2net" / "u2net.onnx"
     python = (
         runtime / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     )
@@ -68,19 +97,14 @@ def diagnose(check_hash=False):
         python,
         weights,
         runtime / "model" / "config.yaml",
+        runtime / "model" / "dino-config.json",
         runtime / "TripoSR" / "tsr" / "system.py",
     ]
     missing = [
         str(path.relative_to(ROOT)) for path in requirements if not path.is_file()
     ]
-    checksum = "unchecked"
-    if weights.is_file() and check_hash:
-        with weights.open("rb") as stream:
-            checksum = (
-                "verified"
-                if hashlib.file_digest(stream, "sha256").hexdigest() == WEIGHT_SHA256
-                else "mismatch"
-            )
+    checksum = verify_weight(weights, WEIGHT_SHA256, check_hash)
+    foreground_checksum = verify_weight(foreground_weights, U2NET_SHA256, check_hash)
     dependencies = "unchecked"
     if python.is_file():
         try:
@@ -88,7 +112,7 @@ def diagnose(check_hash=False):
                 [
                     str(python),
                     "-c",
-                    "import torch, PIL, xatlas, trimesh, skimage; print(torch.__version__)",
+                    RUNTIME_PROBE,
                 ],
                 capture_output=True,
                 text=True,
@@ -99,11 +123,14 @@ def diagnose(check_hash=False):
             )
         except (OSError, subprocess.SubprocessError):
             dependencies = "unavailable"
-    eligible = (
+    alpha_ready = (
         not missing
         and checksum == "verified"
         and dependencies not in {"unchecked", "import_failed", "unavailable"}
     )
+    if foreground_checksum == "missing":
+        missing.append(str(foreground_weights.relative_to(ROOT)))
+    photo_ready = alpha_ready and foreground_checksum == "verified"
     return {
         "os": platform.platform(),
         "architecture": platform.machine(),
@@ -114,9 +141,14 @@ def diagnose(check_hash=False):
             "engine": "TripoSR",
             "files_missing": missing,
             "weight_verification": checksum,
+            "foreground_weight_verification": foreground_checksum,
+            "input_readiness": {
+                "transparent": alpha_ready,
+                "opaque_photo": photo_ready,
+            },
             "torch_probe": dependencies,
             "preflight": "ready_to_try"
-            if eligible
+            if photo_ready
             else "setup_or_verification_required",
             "setup": "engine/setup.ps1",
         },

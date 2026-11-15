@@ -26,14 +26,14 @@ function png() {
   const row = Buffer.from([0, 240, 35, 15, 255, 240, 35, 15, 255]);
   return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk('IHDR', header), chunk('IDAT', zlib.deflateSync(Buffer.concat([row,row]))), chunk('IEND', Buffer.alloc(0))]);
 }
-function fixture(uri) {
+function fixture(uri, sceneExtras) {
   const image = png();
   const vertices = Buffer.alloc(60 + Math.ceil(image.length / 4) * 4);
   image.copy(vertices, 60);
   [0, 1, 0, -1, -1, 0, 1, -1, 0, .5, 1, 0, 0, 1, 0].forEach((v, i) => vertices.writeFloatLE(v, i * 4));
   const doc = {
     asset: { version: '2.0', generator: 'synthetic textured test fixture' }, scene: 0,
-    scenes: [{ nodes: [0] }], nodes: [{ mesh: 0 }],
+    scenes: [{ nodes: [0], extras: sceneExtras }], nodes: [{ mesh: 0 }],
     meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, material: 0 }] }],
     materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 }, metallicFactor: 0, roughnessFactor: 1 }, doubleSided: true }],
     textures: [{ source: 0 }], images: [uri ? { uri } : { bufferView: 2, mimeType: 'image/png' }],
@@ -92,6 +92,21 @@ function waitForServer(server) {
     const textureCount = await page.evaluate(() => window.viewerTextureCount());
     if (textureCount < 1) throw Error('expected texture not loaded');
     const materialImage = await canvas.screenshot();
+    if (synthetic) {
+      const dessert = fixture(undefined, { imageTo3dProfile: 'layered-dessert' });
+      await page.locator('#file').setInputFiles({ name: 'dessert.glb', mimeType: 'model/gltf-binary', buffer: dessert });
+      await page.waitForFunction(() => window.viewerState?.view === 'home');
+      const home = await page.evaluate(() => window.viewerCamera());
+      if (Math.abs(home.azimuth - Math.atan(.13)) > .00001
+        || Math.abs(home.polar - Math.atan2(Math.hypot(1, .13), .31)) > .00001) throw Error('incorrect dessert home camera');
+      await page.locator('[data-view=front]').click();
+      if (Math.abs((await page.evaluate(() => window.viewerCamera())).azimuth) > .00001) throw Error('front preset failed');
+      await page.locator('#reset').click();
+      if ((await page.evaluate(() => window.viewerState.view)) !== 'home') throw Error('dessert reset failed');
+      await page.locator('#file').setInputFiles({ name: 'synthetic-fixture.glb', mimeType: 'model/gltf-binary', buffer: data });
+      await page.waitForFunction(expected => window.viewerState?.sha === expected && window.viewerState.view === 'front', sha);
+      if (!(await canvas.screenshot()).equals(materialImage)) throw Error('generic backdrop or camera changed after dessert');
+    }
     await page.locator('[data-mode=clay]').click();
     const clayImage = await canvas.screenshot();
     const clayMetrics = await page.evaluate(() => {

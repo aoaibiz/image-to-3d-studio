@@ -4,6 +4,7 @@ import time
 import unittest
 from pathlib import Path
 from studio.core import JobCore, JobError
+from engine.pipeline import PIPELINE
 
 
 class CoreTests(unittest.TestCase):
@@ -110,7 +111,7 @@ class CoreTests(unittest.TestCase):
                     "marching_cubes_resolution": 96,
                     "texture_size": 1024,
                     "auto_finish_complete": True,
-                    "pipeline": "triposr-auto-finish-v1",
+                    "pipeline": PIPELINE,
                     "artifact_sha256": artifact_hashes,
                 }
             )
@@ -152,7 +153,7 @@ class CoreTests(unittest.TestCase):
             "marching_cubes_resolution": 96,
             "texture_size": 1024,
             "auto_finish_complete": True,
-            "pipeline": "triposr-auto-finish-v1",
+            "pipeline": PIPELINE,
             "artifact_sha256": artifact_hashes,
         }
 

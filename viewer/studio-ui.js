@@ -15,6 +15,7 @@ app.innerHTML = `
     <p id="selected" aria-live="polite">画像はまだ選ばれていません。</p>
     <div class="actions"><button class="primary" id="generate" disabled>3D を生成</button><button id="cancel" hidden>処理を中止</button><button id="resume" hidden>処理を再開</button></div>
     <div id="job-state" role="status" aria-live="polite"><p>画像を選んでください。</p></div>
+    <a id="appearance-sheet" target="_blank" rel="noopener" hidden>入力画像と立体の形・色を見比べる</a>
     <figure id="pose-preview" hidden><img width="96" height="96" alt="自動で選んだポーズ"><figcaption>使用したポーズです。別の対象を作るには、その部分を切り抜いて送ってください。</figcaption></figure>
   </div>`;
 document.querySelector('header').after(app);
@@ -31,9 +32,9 @@ const state = document.querySelector('#job-state');
 const lastKey = 'image3d:last-job';
 let file = null, imageHash = '', jobId = '', stream = null, loadingJob = '', busy = false, jobActive = false, choice = 0, scrollOnResult = false;
 const terminal = new Set(['needs_review', 'failed', 'cancelled', 'interrupted']);
-const stages = { queued: '順番待ち', starting: '生成の準備中', 'initializing model': 'モデルを準備中', preprocessing: '画像を整えています', 'selecting source': '対象を選んでいます', 'finishing model': '形と塗装を仕上げています', 'resuming finish': '保存した立体から仕上げを再開しています', 'running model': '立体を推定中', 'extracting mesh': '形状を取り出しています', 'baking texture': '表面の色を作成中', inference: '立体を生成中', mesh: '形状を作成中', texture: 'テクスチャを作成中', export: 'GLB を出力中', inspection: '形式を検査中', rendering: '確認画像を作成中', needs_review: '確認待ち', failed: '処理に失敗', cancelled: '中止', interrupted: '中断' };
+const stages = { queued: '順番待ち', starting: '生成の準備中', 'initializing model': 'モデルを準備中', preprocessing: '画像を整えています', 'selecting source': '対象を選んでいます', 'finishing model': '形と塗装を仕上げています', 'resuming finish': '保存した立体から仕上げを再開しています', 'running model': '立体を推定中', 'extracting mesh': '形状を取り出しています', 'baking texture': '表面の色を作成中', inference: '立体を生成中', mesh: '形状を作成中', texture: 'テクスチャを作成中', export: 'GLB を出力中', inspection: '形式を検査中', rendering: '確認画像を作成中', appearance: '入力画像と立体を比較中', needs_review: '確認待ち', failed: '処理に失敗', cancelled: '中止', interrupted: '中断' };
 function message(text) { state.textContent = text; }
-function idKey(hash) { return 'image3d:finish-v1:input:' + hash; }
+function idKey(hash) { return 'image3d:finish-v2:input:' + hash; }
 function showControls(job) {
   const active = job.status === 'running' || job.status === 'queued';
   jobActive = active;
@@ -87,7 +88,11 @@ async function loadResult(job) {
     const manual = job.review;
     const manualText = manual?.sha256 === actualHash && ['pass', 'fail', 'review'].includes(manual.decision)
       ? '。人の確認: ' + (labels[manual.decision] || '未確認') : '';
-    const finishes = {'standing-figure': '立ち姿の輪郭から造形・塗装しました。', 'wheeled-vehicle': '車輪と窓の位置から車体を造形しました。', 'inferred-mesh': '対象別の特徴を確認できなかったため、TripoSRの推定結果を表示します。'};
+    const finishes = {'standing-figure': '立ち姿の輪郭から造形・塗装しました。', 'wheeled-vehicle': '車輪と窓の位置から車体を造形しました。', 'layered-dessert': '写真からグラスの幅、クリームの層、果物の位置を計測して仕上げました。', 'image-guided-general': '入力の輪郭を照合し、推定した立体に汎用仕上げを適用しました。', 'inferred-mesh': '元の推定形状を保持しました。入力画像と見比べてください。'};
+    const comparison = document.querySelector('#appearance-sheet');
+    const sheet = inspection.image_comparison?.contact_sheet;
+    comparison.hidden = !(sheet === actualHash + '_appearance-comparison.jpg' && job.artifacts.includes(sheet));
+    if (!comparison.hidden) comparison.href = '/api/jobs/' + job.id + '/artifacts/' + sheet;
     const selectedPose = settings.source_selection?.detected_count ? `全${settings.source_selection.detected_count}個の候補から上段の中央に近い1個を選びました。` : '';
     const pose = document.querySelector('#pose-preview');
     pose.hidden = !selectedPose || !job.artifacts.includes('input-processed.png');
@@ -101,6 +106,7 @@ async function refresh(id) {
   const { job } = await api(`/api/jobs/${id}`);
   if (id !== jobId) return;
   showControls(job);
+  if (job.status !== 'needs_review') document.querySelector('#appearance-sheet').hidden = true;
   const label = stages[job.stage] || job.stage || job.status;
   message(`${label}（ジョブ ${job.id}）${job.error ? ' — ' + job.error : ''}`);
   if (job.status === 'needs_review') await loadResult(job);

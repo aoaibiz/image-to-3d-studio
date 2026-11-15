@@ -1,5 +1,8 @@
 import http.client
+import json
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 import threading
 import unittest
 from pathlib import Path
@@ -35,6 +38,17 @@ class HttpTests(unittest.TestCase):
                     ],
                     403,
                 )
+                states = ("setup_or_verification_required", "ready_to_try")
+                responses = [
+                    SimpleNamespace(stdout=json.dumps({"local_cpu": {"preflight": s}}))
+                    for s in states
+                ]
+                with patch("studio.server.subprocess.run", side_effect=responses) as probe:
+                    for expected in (*states, "ready_to_try"):
+                        code, body = request("GET", "/api/doctor")
+                        self.assertEqual(code, 200)
+                        self.assertIn(expected, body.decode("utf8"))
+                    self.assertEqual(probe.call_count, 2)
                 self.assertEqual(request("POST", "/api/jobs", body=b"x")[0], 403)
                 code, data = request(
                     "POST",
@@ -43,8 +57,6 @@ class HttpTests(unittest.TestCase):
                     b"x",
                 )
                 self.assertEqual(code, 201)
-                import json
-
                 job = json.loads(data)["job"]["id"]
                 code, events = request("GET", "/api/jobs/" + job + "/events")
                 self.assertEqual(code, 200)

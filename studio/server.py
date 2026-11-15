@@ -23,6 +23,7 @@ for name in (
     "build/three.core.js",
     "examples/jsm/loaders/GLTFLoader.js",
     "examples/jsm/controls/OrbitControls.js",
+    "examples/jsm/environments/RoomEnvironment.js",
     "examples/jsm/utils/BufferGeometryUtils.js",
 ):
     STATIC["/node_modules/three/" + name] = "viewer/node_modules/three/" + name
@@ -92,6 +93,7 @@ class Handler(BaseHTTPRequestHandler):
             checks = {
                 "python": (ROOT / ".runtime/venv/Scripts/python.exe").is_file(),
                 "model": (ROOT / ".runtime/model/model.ckpt").is_file(),
+                "foreground_model": (ROOT / ".runtime/u2net/u2net.onnx").is_file(),
                 "validator": (ROOT / ".runtime/validator/gltf_validator.exe").is_file(),
                 "node": bool(shutil.which("node")),
                 "viewer": (
@@ -99,12 +101,18 @@ class Handler(BaseHTTPRequestHandler):
                 ).is_file(),
             }
             core = self.server.core
-            weights = ROOT / ".runtime" / "model" / "model.ckpt"
-            try:
-                stat = weights.stat()
-                weight_key = (stat.st_size, stat.st_mtime_ns)
-            except OSError:
-                weight_key = None
+            weight_key = []
+            for relative in (
+                "model/model.ckpt",
+                "model/config.yaml",
+                "model/dino-config.json",
+                "u2net/u2net.onnx",
+            ):
+                try:
+                    stat = (ROOT / ".runtime" / relative).stat()
+                    weight_key.append((stat.st_size, stat.st_mtime_ns))
+                except OSError:
+                    weight_key.append(None)
             with core.changed:
                 busy = bool(core.active or core.checking)
                 if not busy and (
@@ -133,8 +141,11 @@ class Handler(BaseHTTPRequestHandler):
                         check=True,
                     )
                     cached = json.loads(probe.stdout)
-                    core.doctor_cache = cached
-                    core.doctor_weight_key = weight_key
+                    # A repaired installation must be diagnosable in the same session.
+                    ready = cached.get("local_cpu", {}).get("preflight") == "ready_to_try"
+                    with core.changed:
+                        core.doctor_cache = cached if ready else None
+                        core.doctor_weight_key = weight_key
                 except (OSError, ValueError, subprocess.SubprocessError):
                     cached = None
                 finally:
