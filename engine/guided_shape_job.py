@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from engine import local_shape_job, triposg_cpu as sg
-from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS, OBSERVED_PIPELINE, OBSERVED_PIPELINES, SHAPE_PIPELINE
+from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS, OBSERVED_PIPELINE, OBSERVED_PIPELINES, SHAPE_PIPELINE, SG_CHART_PIPELINE
 
 EDITABLE = {
     "model.glb",
@@ -49,11 +49,22 @@ def _consent(setup, pipeline=GUIDED_PIPELINE):
         )
 
 
+def valid_chart(out,settings):
+    from engine.local_joined_chart_job import valid
+    return valid(out,settings)
+
+
 def _validate(directory, pipeline, job_key):
     marker = directory / "settings.json"
     if not marker.exists():
         return None
     settings = sg.read_json(marker)
+    if pipeline==SG_CHART_PIPELINE:
+        if not (settings["pipeline"]==pipeline and settings["auto_finish_complete"] is True and settings["input_sha256"]==job_key["input_sha256"]
+                and settings["marching_cubes_resolution"]==job_key["resolution"] and settings["texture_size"]==job_key["texture_size"]
+                and valid_chart(directory,settings)):
+            raise ValueError("保存した展開図ジョブの入力と出力が一致しません。")
+        return settings
     files = settings["artifact_sha256"]
     required = GUIDED_FILES if pipeline in GUIDED_PIPELINES else BASE_FILES
     if not (
@@ -124,9 +135,13 @@ def _chatgpt_observations(source, work, source_sha, setup, *, pipeline=OBSERVED_
     cache = work / "photo-observer"
     # Any downstream checkpoint proves the observation already took place.
     # Recovery reads the original response and must never launch another turn.
-    has_checkpoint = any((work / name).exists() for name in (
-        "observation-seal.json", "guides", "base", "guided-paint",
-    ))
+    downstream = ("observation-seal.json", "guides", "guided-paint", "chart-route.json", "joined-guides",
+                  "source-continuity", "paint-intent.json", "observation-intent.json")
+    if pipeline != SG_CHART_PIPELINE:
+        downstream+=("base",)
+    has_checkpoint=any((work/name).exists() for name in downstream)
+    if pipeline == SG_CHART_PIPELINE:
+        has_checkpoint |= any((work.parent / name).exists() for name in ("chart-result.json", "model.glb", "generation.json"))
     if has_checkpoint or (cache / "receipt.json").exists():
         report = observer.recover_photo(source, cache)
     else:
@@ -139,6 +154,9 @@ def _chatgpt_observations(source, work, source_sha, setup, *, pipeline=OBSERVED_
                 return False
             return True
 
+        if pipeline == SG_CHART_PIPELINE:
+            # Loss of the observer journal must not create a second remote request.
+            sg.atomic_json(work / "observation-intent.json", {"source_sha256": source_sha, "pipeline": pipeline})
         report = observer.analyze_photo(source, cache, recipe=observer.METHOD_V2,
                                        external_opt_in=True, check_consent=consent_now)
         if report.get("method") != observer.METHOD_V2:
@@ -360,6 +378,21 @@ def run(source, out, resolution=256, texture_size=1024, *, setup, pipeline=GUIDE
             # An existing manifest is part of the immutable provider request, including
             # older requests created before local photograph analysis was available.
             observations, observation_receipt = None, None
+            if pipeline == SG_CHART_PIPELINE:
+                from engine import local_joined_chart_job as joined
+                original=_validate(base,SHAPE_PIPELINE,key)
+                if original is None:
+                    record("guided_checkpoint")
+                    local_shape_job.run(source,base,resolution,texture_size)
+                    original=_validate(base,SHAPE_PIPELINE,key)
+                    if original is None:raise ValueError("ローカル形状を確認できません。")
+                stage="guided_chatgpt_observation";print("observing photo with ChatGPT",flush=True);record(stage)
+                observations,observation_receipt=_chatgpt_observations(source,work,key["input_sha256"],setup,pipeline=pipeline)
+                stage="guided_projection"
+                saved=joined.run(source,out,base,work,key,original,observations,observation_receipt,setup,record)
+                if not valid_chart(out,saved):raise ValueError("展開図の出力検証に失敗しました。")
+                record("guided_export","completed")
+                return saved
             if pipeline == OBSERVED_PIPELINE:
                 stage = "guided_chatgpt_observation"
                 print("observing photo with ChatGPT", flush=True)

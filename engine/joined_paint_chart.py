@@ -232,6 +232,7 @@ def _build(surface):
         guide=image,
         rectangle=(start, lo, stop, hi),
         definition=evidence,
+        supported_hidden_fraction=float(supported.sum() / max(1, hidden.sum())),
         unique_patches=_unique_source_patches(photo, measured, surface["observation"]),
     )
 
@@ -283,11 +284,22 @@ def confirm_chart(
 
 
 def prepare_chart(
-    *, native_model, source_photo, foreground, registration, observation, output_dir
+    *,
+    native_model,
+    source_photo,
+    foreground,
+    registration,
+    observation,
+    output_dir,
+    minimum_hidden_fraction=0.0,
 ):
     _, chart, data, manifest = _prepare(
         native_model, source_photo, foreground, registration, observation
     )
+    if chart["supported_hidden_fraction"] < minimum_hidden_fraction:
+        raise ChartUnavailable(
+            "The chart covers too little writable hidden native material"
+        )
     with gt._stage(Path(output_dir)) as stage:
         (stage / "guide.png").write_bytes(data)
         gt._json(stage / "chart.json", manifest)
@@ -476,6 +488,7 @@ def _transfer(surface, chart, sheet):
     return updated, dict(
         changed_uv=int(diff.sum()),
         eligible_uv=int(eligible.sum()),
+        supported_hidden_fraction=chart["supported_hidden_fraction"],
         locked_changed=0,
         unsupported_surface_changed=0,
         source_observed_changed=0,

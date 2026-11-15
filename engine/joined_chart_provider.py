@@ -10,7 +10,11 @@ import time
 
 from engine import guided_provider as provider
 from engine.joined_paint_chart import METHOD, SIZE, confirm_chart
-from engine.pipeline import SF3D_OBSERVED_PIPELINE, OBSERVATION_METHODS
+from engine.pipeline import (
+    SF3D_OBSERVED_PIPELINE,
+    SG_CHART_PIPELINE,
+    OBSERVATION_METHODS,
+)
 from engine.visual_brief import json_sha, validate_photo_observations
 
 PROMPT = """Use the built-in image generation tool once. The upper wide rectangle is one continuous UV texture strip, unwrapped from the actual curved surface of the object. It is a single continuous painting canvas, not a 3D view, not two views, and not a montage. The lower photograph shows the real observed side. Return only the upper wide rectangle, filling the central gray-clay area with an inferred continuous diffuse colour painting that suits the same object. The left and right coloured margins are fixed measured samples from the photograph. Keep their precise positions, sizes, colours, broad lines and fine details unchanged. Extend compatible lines across each input boundary, matching their thickness, scale and flow. Preserve the existing registration, top and bottom, and keep object-up unchanged. No caption, photo, label, extra frame, cast shadow, highlight, perspective recamera, new structural feature, mirrored frontal image, repeated unique central emblem, lettering, or branding. The object's unseen decoration is inferred: continue surrounding palette and ornamental vocabulary naturally, reserving each distinctive photographed feature for its original face. If the tool cannot produce the requested image, report its failure; do not retry, use code, or use another tool."""
@@ -21,7 +25,7 @@ def _sha(data):
 
 
 def _identity(manifest, source, guide, target, pipeline):
-    if pipeline != SF3D_OBSERVED_PIPELINE:
+    if pipeline not in (SF3D_OBSERVED_PIPELINE, SG_CHART_PIPELINE):
         raise provider.TurnaroundProviderError(
             "この塗装方式には専用の写真＋ガイド送信設定が必要です。"
         )
@@ -97,7 +101,7 @@ def verify_completed(receipt, manifest, source_path, guide_path, payload):
         provider._bytes(source_path),
         provider._bytes(guide_path),
         io.BytesIO(),
-        SF3D_OBSERVED_PIPELINE,
+        receipt.get("pipeline"),
     )
     _matches(receipt, identity)
     if (

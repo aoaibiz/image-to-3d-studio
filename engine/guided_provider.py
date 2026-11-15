@@ -535,23 +535,21 @@ def _require_consent(setup, pipeline="triposg-codex-guided-v1"):
         )
 
 
-def _require_chart_consent(setup, pipeline):
-    from engine.pipeline import SF3D_OBSERVED_PIPELINE
+def _require_chart_consent(setup,pipeline):
+    from engine.pipeline import SF3D_OBSERVED_PIPELINE, SG_CHART_PIPELINE
     from studio.configure import agreement
+    if pipeline not in {SF3D_OBSERVED_PIPELINE,SG_CHART_PIPELINE}:
+        raise TurnaroundProviderError("この生成設定で展開図を送信できません。")
     try:
-        actual = json.loads(_bytes(setup,32768))
-    except (OSError,ValueError,TurnaroundProviderError) as exc:
-        raise TurnaroundProviderError("展開図の送信同意を確認できません。") from exc
-    configured = actual.get("agreement",{}) if isinstance(actual,dict) else {}
-    if (
-        pipeline != SF3D_OBSERVED_PIPELINE
-        or not isinstance(configured,dict)
-        or configured.get("schema")!=2
-        or not isinstance(configured.get("appearance"),dict)
-        or configured["appearance"].get("paint_guide_recipes")!=["two-rendered-geometry-views","source-anchored-surface-chart"]
-        or json.dumps(actual,sort_keys=True) != json.dumps({"pipeline":pipeline,"agreement":agreement(pipeline)},sort_keys=True)
-    ):
-        raise TurnaroundProviderError("展開図と元写真をOpenAIに送る設定を初期設定で選択してください。")
+        actual=json.loads(_bytes(setup,32768))
+        configured=actual["agreement"]
+        scope=configured if pipeline==SG_CHART_PIPELINE else configured["appearance"]
+        recipes=(["source-anchored-surface-chart"] if pipeline==SG_CHART_PIPELINE else ["two-rendered-geometry-views","source-anchored-surface-chart"])
+        valid=(configured.get("schema")==2 and scope["paint_guide_recipes"]==recipes
+               and json.dumps(actual,sort_keys=True)==json.dumps({"pipeline":pipeline,"agreement":agreement(pipeline)},sort_keys=True))
+    except (KeyError,TypeError,AttributeError,OSError,ValueError,TurnaroundProviderError):
+        valid=False
+    if not valid:raise TurnaroundProviderError("展開図と元写真をOpenAIに送る設定を初期設定で選択してください。")
 
 
 def _structure_directions(evidence):
@@ -687,6 +685,9 @@ def generate_guided_paint(input_path, guide_path, manifest_path, job_dir, *, set
     """Submit once per job; return a proposed appearance sheet for separate quality review."""
     from engine.pipeline import OBSERVATION_METHODS, OBSERVED_PIPELINES
 
+    from engine.pipeline import SG_CHART_PIPELINE
+    if pipeline == SG_CHART_PIPELINE:
+        raise TurnaroundProviderError("この設定は単一の展開図専用です。2方向の画像は送信できません。")
     _require_consent(setup, pipeline)
     source = _bytes(input_path)
     guide = _bytes(guide_path)
