@@ -598,6 +598,9 @@ def paint_continuity(
         empty, return_distances=False, return_indices=True
     )
     pad = empty & ~s["locked"]
+    eligible_hidden = ~s["locked"][y, x] & ~s["observed"]
+    eligible_count = int(eligible_hidden.sum())
+    supported_count = int((support & eligible_hidden).sum())
     delta = updated.astype(np.int16) - old
     updated[pad] = np.clip(
         old[pad].astype(np.int16) + delta[near[0][pad], near[1][pad]], 0, 255
@@ -623,6 +626,9 @@ def paint_continuity(
             locked_changed=0,
             unsupported_surface_changed=0,
             changed_uv=int(changed.sum()),
+            eligible_hidden_uv=eligible_count,
+            supported_hidden_uv=supported_count,
+            supported_hidden_fraction=supported_count / max(eligible_count, 1),
             observed_texels=int(s["observed"].sum()),
         )
         gt._json(stage / "continuity-paint.json", report)

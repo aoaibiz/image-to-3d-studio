@@ -240,6 +240,12 @@ class NativeSurface(unittest.TestCase):
                 native_file, photo, fg, reg, brief, destination
             )
             self.assertGreater(report["changed_uv"], 60_000)
+            self.assertGreaterEqual(report["supported_hidden_uv"], report["changed_uv"])
+            self.assertEqual(
+                report["supported_hidden_fraction"],
+                report["supported_hidden_uv"] / report["eligible_hidden_uv"],
+            )
+            self.assertGreater(report["supported_hidden_fraction"], 0.9)
             self.assertEqual(report["output_glb"], digest(destination / "model.glb"))
             self.assertTrue(
                 report[
