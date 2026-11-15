@@ -173,6 +173,23 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/doctor":
             if self.server.core.pipeline in SHAPE_PIPELINES:
                 result = shape_doctor(self.server.core)
+                if self.server.core.pipeline in GUIDED_PIPELINES:
+                    from engine.guided_shape_job import vision_runtime_path
+                    from engine.visual_brief_setup import ASSETS, EXECUTABLE, PROJECTOR, WEIGHTS
+                    try:
+                        vision = vision_runtime_path()
+                        present = (vision / "bin" / EXECUTABLE).is_file() and all(
+                            (vision / name).stat().st_size == ASSETS[name][0]
+                            for name in (WEIGHTS, PROJECTOR)
+                        )
+                    except (OSError, ValueError):
+                        present = False
+                    result["diagnostics"]["local_visual_analysis"] = {
+                        "model": "Qwen3-VL-2B-Instruct", "files_present": present,
+                        "integrity": "verified before inference",
+                    }
+                    if not present:
+                        result.update(ok=False, message="ローカル画像解析の初期設定を実行してください。")
                 if self.server.core.pipeline == HOST_PIPELINE:
                     result.update(pipeline=HOST_PIPELINE, local=False, recipient="OpenAI ChatGPT")
                     result["diagnostics"]["guided_paint"] = {"provider": "Codex host / OpenAI ImageGen",

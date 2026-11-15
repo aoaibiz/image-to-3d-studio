@@ -45,6 +45,7 @@ Object.assign(stages, {
   'generating shape': '立体の形を推定しています',
   'resuming shape': '保存した計算結果から形状の生成を再開しています',
   'painting model': '入力画像をもとに立体を着色しています',
+  'analyzing surface markings': '元写真の色、繰り返し模様、正面だけにある部品を読み取っています',
   'preparing shape guides': '立体から背面の確認画像を作っています',
   'requesting inferred paint': 'OpenAIで背面の塗装を推定しています',
   'applying inferred paint': '推定した塗装を立体に合わせています',

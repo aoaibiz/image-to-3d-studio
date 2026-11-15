@@ -91,7 +91,24 @@ def _validate(directory, pipeline, job_key):
     return settings
 
 
-def _prepare(source, base, work, settings):
+def vision_runtime_path():
+    runtime = Path(os.environ.get(
+        "STUDIO_VISUAL_BRIEF_RUNTIME",
+        Path(__file__).resolve().parents[1] / ".runtime" / "visual-brief",
+    ))
+    if not runtime.is_absolute():
+        raise ValueError("STUDIO_VISUAL_BRIEF_RUNTIME must be an absolute directory.")
+    return runtime
+
+
+def _observations(source, work, source_sha):
+    from engine.visual_brief import analyze_photo, provider_observations
+
+    report = analyze_photo(source, work / "local-observations", runtime=vision_runtime_path())
+    return provider_observations(report, source_sha)
+
+
+def _prepare(source, base, work, settings, observations=None):
     from engine.guided_texture import prepare_guides
 
     guides = work / "guides"
@@ -112,6 +129,8 @@ def _prepare(source, base, work, settings):
                 or set(layout["camera"]) != {"rear", "opposite"}
             ):
                 raise ValueError("ガイドの形状または画像の記録が一致しません。")
+            if observations is not None:
+                layout["visual_brief"] = observations
             sg.atomic_json(stage / "request-guide.json", layout)
             sg.atomic_json(
                 stage / "checksums.json",
@@ -184,6 +203,7 @@ def _project(base, guides, sheet, receipt, stage):
             "elapsed_seconds",
             "host_tool_call_id",
             "delivery_mode",
+            "visual_brief_sha256",
         )
         if k in receipt
     }
@@ -267,6 +287,15 @@ def run(source, out, resolution=256, texture_size=1024, *, setup, pipeline=GUIDE
             _consent(setup, pipeline)
             stage = "guided_checkpoint"
             record(stage)
+            # An existing manifest is part of the immutable provider request, including
+            # older requests created before local photograph analysis was available.
+            observations = None
+            if not (work / "guides").exists():
+                stage = "guided_observation"
+                print("analyzing surface markings", flush=True)
+                record(stage)
+                observations = _observations(source, work, key["input_sha256"])
+            stage = "guided_checkpoint"
             original = _validate(base, SHAPE_PIPELINE, key)
             if original is None:
                 local_shape_job.run(source, base, resolution, texture_size)
@@ -276,7 +305,7 @@ def run(source, out, resolution=256, texture_size=1024, *, setup, pipeline=GUIDE
             stage = "guided_guides"
             print("preparing shape guides", flush=True)
             record(stage)
-            guides, layout = _prepare(source, base, work, original)
+            guides, layout = _prepare(source, base, work, original, observations)
             stage = "guided_provider"
             print("requesting inferred paint", flush=True)
             record(stage)

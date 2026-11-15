@@ -1,4 +1,7 @@
-param([string]$CachedWeights = '', [switch]$TripoSG, [switch]$SendPhotoAndGuidesToOpenAI)
+param([string]$CachedWeights = '', [switch]$TripoSG, [switch]$SendPhotoAndGuidesToOpenAI, [switch]$UseCodexHost)
+if ($UseCodexHost -and !$SendPhotoAndGuidesToOpenAI) {
+  throw 'Use -UseCodexHost with -SendPhotoAndGuidesToOpenAI to enable photo transfer for the native host.'
+}
 if ($SendPhotoAndGuidesToOpenAI) {
   $TripoSG = $true
   Write-Host 'Guided paint sends a photo and two rendered views to OpenAI using your ChatGPT plan. Check your remaining allowance and credit settings before enabling it. This preview cannot measure account charges.'
@@ -42,7 +45,14 @@ if ($TripoSG) {
   }
   & (Join-Path $PSScriptRoot 'engine\setup-triposg.ps1') @shapeOptions
   $engineOptions = @('--engine', 'triposg')
-  if ($SendPhotoAndGuidesToOpenAI) { $engineOptions = @('--engine', 'triposg-guided', '--allow-send-to-openai') }
+  if ($SendPhotoAndGuidesToOpenAI) {
+    $visionRoot = & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -c 'from engine.guided_shape_job import vision_runtime_path; print(vision_runtime_path())'
+    if ($LASTEXITCODE) { throw 'Use an absolute STUDIO_VISUAL_BRIEF_RUNTIME path.' }
+    & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -m engine.visual_brief_setup $visionRoot
+    if ($LASTEXITCODE) { throw 'Local visual analysis setup failed. Run the same setup again to resume.' }
+    $guidedEngine = if ($UseCodexHost) { 'triposg-guided-host' } else { 'triposg-guided' }
+    $engineOptions = @('--engine', $guidedEngine, '--allow-send-to-openai')
+  }
   & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -m studio.configure @engineOptions
   if ($LASTEXITCODE) { throw 'Could not select the TripoSG engine for this Studio checkout.' }
 }

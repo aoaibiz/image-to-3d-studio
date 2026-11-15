@@ -41,6 +41,9 @@ class GuidedJobTests(unittest.TestCase):
         local = patch.object(job.local_shape_job, "run", side_effect=self.base)
         self.local = local.start()
         self.addCleanup(local.stop)
+        observer = patch.object(job, "_observations", return_value={"visible_palette": ["gold"]})
+        self.observer = observer.start()
+        self.addCleanup(observer.stop)
         self.submissions = 0
 
     def base(self, source, out, resolution, texture_size):
@@ -143,13 +146,27 @@ class GuidedJobTests(unittest.TestCase):
             job.sg.digest(self.out / "shape-master.glb"),
             result["artifact_sha256"]["shape-master.glb"],
         )
+        layout = job.sg.read_json(self.out / "guided-layout.json")
+        self.assertEqual(layout["visual_brief"], {"visible_palette": ["gold"]})
         self.assertEqual(self.invoke(), result)
+        self.observer.assert_called_once()
         self.assertEqual(self.local.call_count, 1)
         self.assertEqual(self.paint.generate_guided_paint.call_count, 1)
         (self.out / "inferred-paint.png").write_bytes(b"unexpected change")
         with self.assertRaises(job.StageError) as err:
             self.invoke()
         self.assertEqual(err.exception.code, "guided_checkpoint")
+        self.assertEqual(self.submissions, 1)
+
+    def test_local_analysis_failure_is_resumable_before_shape_or_external_send(self):
+        self.observer.side_effect = ValueError("missing local vision runtime")
+        with self.assertRaises(job.StageError) as err:
+            self.invoke()
+        self.assertEqual(err.exception.code, "guided_observation")
+        self.local.assert_not_called()
+        self.paint.generate_guided_paint.assert_not_called()
+        self.observer.side_effect = None
+        self.invoke()
         self.assertEqual(self.submissions, 1)
 
     def test_projection_failure_preserves_base_and_provider_receipt(self):

@@ -39,6 +39,7 @@ class AwaitingHostImage(Exception):
 SHAPE_OUTPUTS = {"shape-master.glb", "appearance.json", "generation.json", "input-processed.png"}
 GUIDED_OUTPUTS = {"guided-paint.json", "guided-views.png", "guided-layout.json", "inferred-paint.png"}
 SHAPE_ERRORS = {
+    "guided_observation": "写真の模様を読み取れませんでした。ローカルの画像解析モデルと空きメモリを確認して同じジョブを再開してください。",
     "guided_consent": "OpenAIへの送信設定を確認してください。ローカルの形状はジョブに保存されています。",
     "guided_checkpoint": "保存した形状または塗装の記録を照合できません。ジョブのバックアップを確認してください。",
     "guided_guides": "立体から背面の確認画像を作成できませんでした。保存した形状を確認してください。",
@@ -666,6 +667,7 @@ class JobCore:
                 "generating shape",
                 "resuming shape",
                 "painting model",
+                "analyzing surface markings",
                 "preparing shape guides",
                 "requesting inferred paint",
                 "applying inferred paint",
