@@ -17,7 +17,7 @@ from engine.triposg_cpu import digest
 from engine.visual_brief import json_sha
 
 
-def fixture(dirpath):
+def fixture(dirpath, sheet_base=(70, 92, 128)):
     body = trimesh.creation.icosphere(subdivisions=1)
     tri = body.faces
     cells = np.arange(len(tri))
@@ -72,12 +72,12 @@ def fixture(dirpath):
     for i, angle in enumerate(gt.ANGLES.values()):
         valid = gt._view(mesh, angle)[3] >= 0
         rgb = np.full((*front.shape, 3), 255, np.uint8)
-        rgb[valid] = [140, 104, 75]
+        rgb[valid] = sheet_base
         pigment = valid & (
             ((x - gt.SIZE * 0.48) ** 2 + (y - gt.SIZE * 0.55) ** 2)
             < (gt.SIZE * 0.09) ** 2
         )
-        rgb[pigment] = [76, 80, 65]
+        rgb[pigment] = [63, 77, 106]
         sheet.paste(Image.fromarray(rgb), (i * gt.SIZE, 0))
     sheet_path = dirpath / "sheet.png"
     sheet.save(sheet_path)
@@ -139,6 +139,13 @@ def fixture(dirpath):
 
 
 class NativeFullTests(unittest.TestCase):
+    def test_new_visible_color_break_on_matched_silhouettes_holds_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = fixture(Path(tmp), sheet_base=(140, 104, 75))
+            with self.assertRaisesRegex(paint.NativeFullReviewHold, "塗装"):
+                paint.paint_native_full(*args)
+            self.assertFalse((args[-1] / "model.glb").exists())
+
     def test_thick_non_repeated_subject_and_native_material(self):
         with tempfile.TemporaryDirectory() as tmp:
             args = fixture(Path(tmp))
@@ -320,6 +327,7 @@ class NativeFullTests(unittest.TestCase):
             changes = (result[yy, xx] != base[yy, xx]).any(axis=1)
             self.assertGreater(changes.sum(), 500)
             self.assertTrue((result[yy[changes], xx[changes]] == [95, 140, 195]).all())
+            self.assertGreaterEqual(len(record["paint_join_screen"]["angles_with_new_edges"]), 2)
             self.assertEqual(record["locked_changed"], 0)
             self.assertEqual(record["unsupported_surface_changed"], 0)
 

@@ -29,7 +29,7 @@ from engine.visual_brief import (
     json_sha,
     validate_provider_observations as validate_local,
 )
-from quality import reflected_paint as copy_test
+from quality import paint_join, reflected_paint as copy_test
 
 
 class NativeFullRegistrationError(ValueError):
@@ -558,6 +558,7 @@ def _project(mesh, albedo, matte, camera, sheet):
     )
     if support.sum() < max(32, round(len(y) * 0.005)):
         raise NativeFullReviewHold("No significant registered hidden surface")
+    join = paint_join.inspect(mesh, ids, y, x, albedo, fields, weights, support, first)
     updated = albedo.copy()
     updated[y[support], x[support]] = np.rint(chosen[support])
     delta = updated.astype("int16") - albedo.astype("int16")
@@ -575,6 +576,7 @@ def _project(mesh, albedo, matte, camera, sheet):
         raise ValueError("Native source lock or unsupported UV changed")
     return updated, {
         "pair_registration": stats,
+        "paint_join_screen": join,
         "source_camera_iou": fit,
         "visible_front_locked": int(lock.sum()),
         "shared_uv_protected": int(overlap.sum()),
@@ -695,6 +697,12 @@ def paint_native_full(
             raise ValueError("Expected a bounded segmented foreground")
     mask = gt._matte(io.BytesIO(fg), gt.SIZE)[:, :, 3] >= 150
     updated, info = _project(mesh, old, mask, registration["camera_frame"], sheet)
+    angles = info["paint_join_screen"]["angles_with_new_edges"]
+    if len(angles) >= 2:
+        raise NativeFullReviewHold(
+            "塗装を切り替えた位置に元の模様にない境界が複数の角度で現れました。"
+            " 確認角度 " + ", ".join(angles)
+        )
     with gt._stage(Path(output_dir)) as stage:
         reopened, actual, other = _save(doc, blob, raw, updated, stage)
         copy = _copy_check(_registered(reopened, registration), actual, obs)
