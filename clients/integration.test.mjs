@@ -5,10 +5,16 @@ import { readFile, mkdtemp, writeFile, unlink, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 const id = "12345678-1234-4123-8123-123456789abc";
+const continuityId = "12345678-1234-4123-8123-123456789abd";
+const continuityPayloads = {
+  "continuity-paint.json": Buffer.from('{"fixture":true}'),
+  "continuity-native.glb": Buffer.from("transport fixture"),
+};
 const image = await readFile(
   new URL("../demo/product-cutout.png", import.meta.url),
 );
@@ -18,6 +24,12 @@ await writeFile(tokenFile, "t".repeat(43), {mode:0o600});
 let received, inspected, returnedPaint;
 const service = http.createServer(async (req, res) => {
   assert.equal(req.headers["x-studio-client"], "1");
+  if (req.url === `/api/jobs/${continuityId}`)
+    return res.end(JSON.stringify({job: {id: continuityId, status: "needs_review", artifacts: Object.keys(continuityPayloads),
+      local_continuity: {external_image_generations: 0, report: "continuity-paint.json"}}}));
+  for (const [name, bytes] of Object.entries(continuityPayloads)) {
+    if (req.url === `/api/jobs/${continuityId}/artifacts/${name}`) return res.end(bytes);
+  }
   if (req.method === "POST" && req.url === `/api/jobs/${id}/host/claim`) {
     assert.equal(req.headers["x-studio-host-token"], "t".repeat(43));
     return res.end(JSON.stringify({ job_id:id, generate_once:true, claim_id:"c".repeat(43), request_sha256:"a".repeat(64) }));
@@ -76,6 +88,26 @@ const transport = new StdioClientTransport({
 const client = new Client({ name: "integration-test", version: "1.0.0" });
 try {
   await client.connect(transport);
+  await test("CLI and MCP preserve the sealed local paint status and exact artifact bytes", async () => {
+    const cli = (...args) => promisify(execFile)(process.execPath, ["cli.mjs", ...args], {
+      cwd: import.meta.dirname, env: {...process.env, STUDIO_PORT: String(service.address().port)},
+    });
+    const status = JSON.parse((await cli("status", continuityId)).stdout).job;
+    const mcpStatus = await client.callTool({name: "status", arguments: {jobId: continuityId}});
+    assert.deepEqual(JSON.parse(mcpStatus.content[0].text).job, status);
+    assert.equal(status.local_continuity.external_image_generations, 0);
+    for (const [filename, bytes] of Object.entries(continuityPayloads)) {
+      const dest = join(hostDir, filename);
+      try {
+        await cli("export", continuityId, filename, dest);
+        assert.deepEqual(await readFile(dest), bytes);
+        const part = await client.callTool({name: "artifact_chunk", arguments: {jobId: continuityId, filename, offset: 0, limit: 128}});
+        assert.deepEqual(Buffer.from(JSON.parse(part.content[0].text).data, "base64"), bytes);
+      } finally {
+        await unlink(dest).catch(error => { if (error.code !== "ENOENT") throw error; });
+      }
+    }
+  });
   await test("host stdio adapter preserves claim, binding and exact returned PNG", async () => {
     const got = await client.callTool({name:"claim_paint",arguments:{jobId:id}});
     const claim = JSON.parse(got.content[0].text);

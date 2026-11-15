@@ -18,6 +18,10 @@ app.innerHTML = `
     <div id="job-state" role="status" aria-live="polite"><p>画像を選んでください。</p></div>
     <a id="appearance-sheet" target="_blank" rel="noopener" hidden>入力画像と立体の形・色を見比べる</a>
     <a id="held-sheet" target="_blank" rel="noopener" hidden>元の立体の検品画像を開く</a>
+    <div id="local-paint-files" hidden>
+      <a target="_blank" rel="noopener">推定塗装の検品記録</a>
+      <a download="continuity-native.glb">推定塗装のGLBを保存</a>
+    </div>
     <figure id="pose-preview" hidden><img width="96" height="96" alt="自動で選んだポーズ"><figcaption>使用したポーズです。別の対象を作るには、その部分を切り抜いて送ってください。</figcaption></figure>
   </div>`;
 document.querySelector('header').after(app);
@@ -182,7 +186,8 @@ async function loadResult(job) {
       message('元写真に写っていない形状や寸法を補った別案です。回転して確認してください。');
       return;
     }
-    if (available) title.textContent = '元のモデルを確認';
+    title.textContent = job.local_continuity?.external_image_generations === 0
+      ? '元写真から模様を補ったモデル' : available ? '元のモデルを確認' : '3D を確認';
     const labels = { pass: '合格', fail: '不合格', reject: '不合格', review: '要確認', needs_review: '要確認', pending_review: '人の確認待ち', unknown: '未確認' };
     const status = part => labels[part?.status] || '未確認';
     const manual = job.review;
@@ -201,6 +206,8 @@ async function loadResult(job) {
       ? 'TripoSG が立体の形と向きを推定しました。入力画像に写った側は、立体を回して確認してください。'
       : settings.pipeline === 'sf3d-codex-observed-v1'
         ? ({ native_material: '元のSF3D材質を保持しました。', guided_region: '背面の塗装を推定しました。',
+             local_continuity: job.local_continuity?.external_image_generations === 0
+               ? '元写真の模様をもとに、見えない面の色をこの端末で推定しました。塗装用の外部画像生成は0回です。' : '',
              guided_full: '写真に写る面の塗装を保ち、2方向の形状ガイドに合う面に推定色を反映しました。' }[settings.appearance_mode] || '')
           + '写真に写っていない面と薄い部品を確認してください。'
         : resultSF3D ? 'SF3Dが形状と材質を推定しました。背面の模様と薄い部品を確認してください。' : finishes[settings.finish_profile] || '';
@@ -254,6 +261,14 @@ async function refresh(id) {
   const { job } = await api(`/api/jobs/${id}`);
   if (id !== jobId) return;
   showControls(job);
+  const paintFiles = document.querySelector('#local-paint-files');
+  paintFiles.hidden = !(job.status === 'needs_review' && job.local_continuity?.external_image_generations === 0
+    && job.artifacts.includes('continuity-paint.json') && job.artifacts.includes('continuity-native.glb'));
+  if (!paintFiles.hidden) {
+    const [report, model] = paintFiles.querySelectorAll('a');
+    report.href = `/api/jobs/${id}/artifacts/continuity-paint.json`;
+    model.href = `/api/jobs/${id}/artifacts/continuity-native.glb`;
+  }
   document.body.classList.toggle('review-held', job.status === 'review_hold');
   if (job.status !== 'review_hold') {
     document.querySelector('#held-sheet').hidden = true;

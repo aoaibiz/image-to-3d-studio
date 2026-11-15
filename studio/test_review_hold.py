@@ -63,13 +63,15 @@ class HoldSurfaceTest(unittest.TestCase):
                 self.assertIn(b'"review_hold"', events)
                 detail = json.loads(get(api)[1])["job"]
                 self.assertEqual(detail["status"], "review_hold")
+                self.assertNotIn("local_continuity", detail)
                 self.assertEqual(set(detail["artifacts"]), {"review-native.glb", "review-hold.json"})
                 bundle = json.loads(get(api + "/artifacts/review-hold.json")[1])
                 self.assertEqual(bundle, detail["hold"])
                 self.assertEqual(bundle["reason"], observed.HOLD_REASONS["source_fit"])
                 preview = get(api + "/artifacts/review-native.glb")[1]
                 self.assertEqual(hashlib.sha256(preview).hexdigest(), bundle["preview_sha256"])
-                for name in ["model.glb", "input-processed.png", "input.image", "settings.json", "generation.json", "review-native.png"]:
+                for name in ["model.glb", "input-processed.png", "input.image", "settings.json", "generation.json",
+                             "review-native.png", "continuity-paint.json", "continuity-native.glb"]:
                     self.assertEqual(get(api + "/artifacts/" + name)[0], 404)
                 with self.assertRaises(JobError):
                     core.resume(jid)

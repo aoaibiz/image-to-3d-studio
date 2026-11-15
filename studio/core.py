@@ -49,6 +49,23 @@ HYPOTHESIS_GLB = "shape-alternative.glb"
 HYPOTHESIS_MASTER = "shape-alternative.gltf"
 HYPOTHESIS_FILES = {HYPOTHESIS_REPORT, HYPOTHESIS_GLB, HYPOTHESIS_MASTER, "pre-hypothesis.glb"}
 PUBLIC_SHAPE_METHODS = {"source-rim-inferred-cavity-v1"}
+CONTINUITY_FILES = ("continuity-paint.json", "continuity-native.glb")
+
+
+def _local_continuity(out, settings, source_sha, validate):
+    if settings.get("appearance_mode") != "local_continuity" or settings.get("pipeline") != SF3D_OBSERVED_PIPELINE:
+        return False
+    try:
+        sealed = settings["artifact_sha256"]
+        if (settings["input_sha256"] != source_sha or not all(name in sealed for name in CONTINUITY_FILES)
+                or any((out / name).resolve() != out.resolve() / name for name in (*CONTINUITY_FILES, "generation.json"))
+                or not validate(out, settings)):
+            return False
+        generation = json.loads((out / "generation.json").read_bytes())
+        counts = {"external_image_generations": 0, "external_photo_observations": 1, "external_shape_generations": 1}
+        return all(type(generation.get(key)) is int and generation[key] == count for key, count in counts.items())
+    except (OSError, KeyError, ValueError, TypeError, AttributeError):
+        return False
 
 
 def _hypothesis_files(out, settings, source_sha, validate):
@@ -278,6 +295,11 @@ class JobCore:
                         if extra:
                             names.extend(extra)
                             job["shape_hypothesis_files"] = extra
+                        # Both checks use the same engine verifier on these exact settings.
+                        if _local_continuity(folder, settings, job["input_sha256"],
+                                             lambda out, cfg: bool(extra) or self._artifacts_valid(out, cfg)):
+                            names.extend(CONTINUITY_FILES)
+                            job["local_continuity"] = {"external_image_generations": 0, "report": "continuity-paint.json"}
                 except (KeyError, OSError, TypeError, ValueError):
                     pass
             if folder.exists():
