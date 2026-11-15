@@ -1,6 +1,6 @@
 # Pixal3D 公開写真デモ
 
-CC0で公開済みの写真を、Hugging Face利用者 `victor` が運営するSpaceへ送ります。公開URLから写真や出力を取得できる場合があり、保存期間は未確認です。人物や私物の非公開写真には、Studioのローカル生成を使用してください。[送信先のSpace](https://huggingface.co/spaces/victor/pixal3d-studio)
+CC0で公開済みの写真を、Hugging Face利用者 `victor` が運営するSpaceへ送ります。コミュニティ共有をオフにしても写真と出力はURLから取得でき、保存期間は未確認です。人物や私物の非公開写真には、Studioのローカル生成を使用してください。[送信先のSpace](https://huggingface.co/spaces/victor/pixal3d-studio)
 
 通常のStudioセットアップ後、専用の保存先を指定します。
 

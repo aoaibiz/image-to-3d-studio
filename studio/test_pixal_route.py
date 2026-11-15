@@ -91,8 +91,21 @@ class PixalRouteTests(unittest.TestCase):
                    "revision": pixal_provider.REVISION, "quality": "needs_review", "source_sha256": self.sha,
                    "upload_sha256": self.sha, "sha256": material["sha256"], "material": material,
                    "artifacts": {"input.png": self.sha, "model.glb": material["sha256"]}}
+        receipt.update(origin=pixal_provider.ORIGIN, resolution=1024, quality_setting="balanced",
+                       asset_id="b" * 12, event_id="a" * 32, seed=pixal_provider.SEED, mock=False,
+                       share_to_community=False, download_url=pixal_provider.ORIGIN + "/community-assets/" + "b"*12 + "/model.glb")
+        record = work / "provider.json"
+        record.write_text(json.dumps(receipt))
         result = job.finalize(work, self.out, self.sha, receipt)
         self.assertTrue(JobCore._artifacts_valid(self.out, result))
+        for key, wrong in [("revision", "other"), ("asset_id", "c" * 12), ("seed", 8),
+                           ("event_id", "bad"), ("share_to_community", True)]:
+            changed = {**receipt, key: wrong}
+            record.write_text(json.dumps(changed))
+            self.assertFalse(JobCore._artifacts_valid(self.out, result))
+            with self.assertRaises(ValueError):
+                job.finalize(work, self.out, self.sha, changed)
+        record.write_text(json.dumps(receipt))
         master = json.loads((self.out / "editable.gltf").read_bytes())
         self.assertEqual(master["materials"], doc["materials"])
         self.assertEqual(base64.b64decode(master["buffers"][0]["uri"].split(",")[1]), binary[8:])

@@ -13,12 +13,10 @@ from PIL import Image, ImageOps
 from engine.triposg_cpu import atomic_json, digest, read_json, writer_lock
 from quality.inspection import load_glb
 
-SPACE = "victor/pixal3d-studio"
-REVISION = "ef1cb838893269417b3eaa81dd8fc635f65a5180"
-ORIGIN = "https://victor-pixal3d-studio.hf.space"
+from engine.pixal_identity import ORIGIN, REVISION, SEED, SPACE
+
 HUB = "https://huggingface.co/api/spaces/" + SPACE
 BUCKET = "https://huggingface.co/buckets/victor/pixal3d-community/resolve/assets/"
-SEED = 1234
 MAX_GLB = 96 * 1024**2
 FIELDS = ["image", "prompt", "seed", "resolution", "quality", "manual_fov", "share_to_community"]
 CALL = ORIGIN + "/gradio_api/call/generate_fast"

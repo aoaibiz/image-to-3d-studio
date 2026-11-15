@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 from engine import triposg_cpu as files
+from engine.pixal_identity import matches_completed
 from engine.pipeline import PIXAL_AGREEMENT, PIXAL_PIPELINE
 
 ARTIFACTS = {"model.glb", "provider-native.glb", "editable.gltf", "input-processed.png", "generation.json"}
@@ -24,7 +25,7 @@ def consent(setup, source_sha, granted):
         raise ConsentError("このCC0公開写真の個別同意と送信先を確認してください。")
 
 
-def valid(out, settings):
+def valid(out, settings, *, receipt_path=None):
     try:
         out = Path(out)
         seals = settings["artifact_sha256"]
@@ -35,8 +36,11 @@ def valid(out, settings):
             return False
         history = files.read_json(out / "generation.json")
         receipt = history["provider_receipt"]
+        original_receipt = receipt_path or out / "pixal-work" / "provider" / "provider.json"
+        if original_receipt.is_symlink() or receipt != files.read_json(original_receipt):
+            return False
         return (history["agreement"] == PIXAL_AGREEMENT
-                and receipt["state"] == "completed" and receipt["provider_space"] == "victor/pixal3d-studio"
+                and matches_completed(receipt)
                 and receipt["quality"] == settings["visual_quality"] == "needs_review"
                 and receipt["source_sha256"] == history["public_cc0_sha256"] == settings["input_sha256"]
                 and receipt["sha256"] == receipt["material"]["sha256"] == settings["glb_sha256"]
@@ -77,7 +81,7 @@ def finalize(work, out, key, receipt):
             "generation_history": "generation.json", "visual_quality": "needs_review",
             "camera": camera, "triangles": material["triangles"], "pbr_channels": material["channels"],
         }
-        if not valid(stage, settings):
+        if not valid(stage, settings, receipt_path=work / "provider.json"):
             raise ValueError("Pixal3D成果物のハッシュを照合できません。")
         (out / "settings.json").unlink(missing_ok=True)
         for name in ARTIFACTS:
