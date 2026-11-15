@@ -233,3 +233,31 @@ class NativeFullTests(unittest.TestCase):
                 paint.NativeFullRegistrationError, "opposite.*opening"
             ):
                 paint._field(None, sheet, np.array([[0, 0, 0]]), np.array([[0, 0, 1]]))
+
+    def test_reopened_material_reflected_source_layout_is_a_hold(self):
+        mesh = trimesh.creation.box(extents=(1, 1, 0.4))
+        # Reuse the exact same spatial layout on the two planes as the negative control.
+        tex = Image.new("RGB", (256, 256), "tan")
+        from PIL import ImageDraw
+
+        draw = ImageDraw.Draw(tex)
+        random = np.random.default_rng(37)
+        for x, y, width, height in random.integers(
+            [4, 4, 3, 4], [240, 240, 20, 22], (46, 4)
+        ):
+            draw.ellipse((x, y, x + width, y + height), fill=(45, 53, 84))
+        mesh.visual = trimesh.visual.TextureVisuals(
+            uv=mesh.vertices[:, :2] + 0.5,
+            material=trimesh.visual.material.PBRMaterial(baseColorTexture=tex),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "duplicated.glb"
+            path.write_bytes(
+                trimesh.exchange.gltf.export_glb(
+                    trimesh.Scene(mesh), include_normals=True
+                )
+            )
+            _, _, pixels, reopened = native._native(path)
+            result = paint._copy_check(reopened, pixels)
+            self.assertEqual(result["status"], "review_hold")
+            self.assertGreater(result["reflected"], 0.95)
