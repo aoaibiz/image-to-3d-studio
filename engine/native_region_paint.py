@@ -573,7 +573,11 @@ def _native(path):
                 or desc.get("mimeType") not in ("image/jpeg", "image/png")
             ):
                 raise ValueError("Native textures must be opaque embedded JPEG or PNG")
-            image = gt._image(_view_bytes(blob, views[desc["bufferView"]]), 1024**2)
+            image_bytes = _view_bytes(blob, views[desc["bufferView"]])
+            with Image.open(io.BytesIO(image_bytes)) as header:
+                if Image.MIME.get(header.format) != desc["mimeType"]:
+                    raise ValueError("Native image encoding and MIME type disagree")
+            image = gt._image(image_bytes, 1024**2)
             if (
                 image.mode != "RGB"
                 or image.width != image.height
@@ -590,6 +594,8 @@ def _native(path):
         if (
             not len(mesh.faces)
             or len(mesh.faces) > 500000
+            or mesh.faces.min() < 0
+            or mesh.faces.max() >= len(mesh.vertices)
             or not np.isfinite(mesh.vertices).all()
             or not np.isfinite(mesh.visual.uv).all()
             or np.min(mesh.visual.uv) < 0
@@ -688,11 +694,16 @@ def paint_native_region(
     )
     source_sha = hashlib.sha256(gt._single(source_photo, 32 * gt.MIB)).hexdigest()
     guide_file = guide_dir / "guides.png"
-    shape_sha = digest(registered_model)
-    native_sha = digest(native_model)
-    matte_sha = digest(foreground)
-    guide_sha = digest(guide_file)
-    sheet_sha = digest(inferred_sheet)
+    shape_sha, native_sha, matte_sha, guide_sha, sheet_sha = (
+        hashlib.sha256(gt._single(path, limit * gt.MIB)).hexdigest()
+        for path, limit in (
+            (registered_model, 48),
+            (native_model, 48),
+            (foreground, 32),
+            (guide_file, 8),
+            (inferred_sheet, 32),
+        )
+    )
     layout_guide = json.loads(gt._single(guide_dir / "guide.json", 65536))
     angles = {k: list(v) for k, v in gt.ANGLES.items()}
     expected = {
