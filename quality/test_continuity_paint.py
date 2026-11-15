@@ -125,7 +125,7 @@ class Continuity(unittest.TestCase):
         self.assertFalse(paint.eligible(ambiguous))
 
 
-def pbr_fixture(case):
+def pbr_fixture(case, sealed=True):
     h, w = 48, 128
     yy, xx = np.indices((h + 1, w + 1))
     theta = xx / w * 2 * np.pi
@@ -149,6 +149,16 @@ def pbr_fixture(case):
         for x in range(w):
             k = y * (w + 1) + x
             tri.extend([[k, k + 1, k + w + 1], [k + 1, k + w + 2, k + w + 1]])
+    if sealed:
+        for row, sign, cap_v in [(0, -1, 0.025), (h, 1, 0.975)]:
+            centre = len(vertices)
+            rim = vertices[row * (w + 1) : row * (w + 1) + w]
+            vertices = np.vstack((vertices, [0, sign, 0], rim))
+            norms = np.vstack((norms, np.tile([0, sign, 0], (w + 1, 1))))
+            uvs = np.vstack((uvs, [0.5, cap_v], [0.5, cap_v] + 0.016 * rim[:, [0, 2]]))
+            for j in range(w):
+                a, b = centre + 1 + j, centre + 1 + (j + 1) % w
+                tri.append([centre, a, b] if sign > 0 else [centre, b, a])
     mesh = trimesh.Trimesh(
         vertices=vertices, vertex_normals=norms, faces=tri, process=False
     )
@@ -162,6 +172,9 @@ def pbr_fixture(case):
     ).astype(np.uint8)
     tex = true.copy()
     tex[np.cos(2 * np.pi * u) < -0.15] = [125, 135, 143]
+    if sealed:
+        cap = (iy / 511 < 0.045) | (iy / 511 > 0.955)
+        true[cap] = tex[cap] = [152, 173, 188]
     mat = trimesh.visual.material.PBRMaterial(
         baseColorTexture=Image.fromarray(tex),
         roughnessFactor=0.5,
@@ -263,3 +276,10 @@ class NativeSurface(unittest.TestCase):
                     case / "bad",
                 )
             self.assertFalse((case / "bad").exists())
+
+    def test_open_rim_with_incompatible_locked_far_side_holds_entire_route(self):
+        with tempfile.TemporaryDirectory() as directory:
+            case = Path(directory)
+            args = pbr_fixture(case, sealed=False)
+            self.assertIsNone(paint.paint_continuity(*args, case / "held"))
+            self.assertFalse((case / "held").exists())

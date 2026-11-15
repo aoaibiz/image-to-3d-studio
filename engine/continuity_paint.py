@@ -389,7 +389,8 @@ def _transport(points, normals, native_rgb, photo_rgb, observed, locked, observa
     # Independent captured photograph copies vote at the same height and
     # periodic arclength; outlying pigment cannot be carried to the far surface.
     donor = np.flatnonzero(observed & supported)
-    target = np.flatnonzero(supported & ~locked)
+    hidden_lock = locked & ~observed & (normals[:, 2] < -0.15)
+    target = np.flatnonzero(supported & (~locked | hidden_lock))
     if not len(donor) or not len(target):
         return None
     positions = np.column_stack((v, az))
@@ -415,6 +416,15 @@ def _transport(points, normals, native_rgb, photo_rgb, observed, locked, observa
     )
     if agree.mean() < 0.92:
         return None
+    fixed = hidden_lock[target]
+    disagreement = np.max(
+        abs(native_rgb[target].astype(float) - native_rgb[ia]), axis=1
+    )
+    damaged = fixed & agree & (disagreement > 25)
+    if damaged.sum() > max(24, 0.015 * len(target)):
+        # Open rims can expose a large far-side band to the wider source lock.
+        # A demonstrably incompatible band would remain in the delivered texture.
+        return None
     # A local conflict on a carried contour cannot be left as speckled holes.
     # Abort the entire material if conflicts form a significant connected patch.
     _, conflict = _grid(v, az, np.isin(np.arange(len(v)), target[~agree]), photo_rgb)
@@ -430,7 +440,8 @@ def _transport(points, normals, native_rgb, photo_rgb, observed, locked, observa
     )
     if (~(agree | may_keep)).mean() > 0.003:
         return None
-    target, ia = target[agree], ia[agree]
+    writable = agree & ~fixed
+    target, ia = target[writable], ia[writable]
     updated[target] = native_rgb[ia]
     support = np.zeros_like(ok)
     support[target] = True
@@ -442,6 +453,8 @@ def _transport(points, normals, native_rgb, photo_rgb, observed, locked, observa
             "measured_period_count": repeat,
             "measured_rows": int(selected.sum()),
             "independent_donor_agreement": float(agree.mean()),
+            "protected_hidden_texels_examined": int(fixed.sum()),
+            "protected_hidden_disagreement": int(damaged.sum()),
             "mean_source_correlation": float(
                 np.mean(source_scores[repeat - 3, selected])
             ),
