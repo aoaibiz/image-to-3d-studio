@@ -35,6 +35,22 @@ class DecisionTests(unittest.TestCase):
             "guided_region",
         )
         self.assertEqual(job._appearance_mode(observed(), True), "guided_region")
+        carved = observed(
+            structures=[{"kind": "recessed_opening"}, {"kind": "raised_relief"}],
+            reverse="unknown",
+        )
+        self.assertEqual(job._appearance_mode(carved, False), "native_material")
+        with self.assertRaises(job.NeedsReview):
+            job._appearance_mode(
+                observed(
+                    structures=[{"kind": "screen_or_controls"}], reverse="unknown"
+                ),
+                False,
+            )
+        focal = observed(cues={"focal": {"family": "geometric"}})
+        with self.assertRaises(job.NeedsReview):
+            job._appearance_mode(focal, False)
+        self.assertEqual(job._appearance_mode(focal, True), "guided_region")
         with self.assertRaises(job.NeedsReview):
             job._appearance_mode(observed(reverse="distinct_working_surface"), False)
         context = observed(reverse="unknown")
@@ -47,12 +63,25 @@ class DecisionTests(unittest.TestCase):
     def test_uncertain_receipt_or_wrong_paint_does_not_auto_finish(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            receipt = root / "receipt.json"
-            job._guard_external(root, "paint", [receipt])
+            receipt = root / "provider/receipt.json"
+            for idx in range(2):
+                with self.assertRaisesRegex(ValueError, "local preflight"):
+                    with job._request(root, "paint", receipt):
+                        raise ValueError("local preflight")
+            receipt.parent.mkdir()
+            with self.assertRaisesRegex(RuntimeError, "lost acknowledgement"):
+                with job._request(root, "paint", receipt):
+                    files.atomic_json(receipt, {"state": "submitted_or_ambiguous"})
+                    raise RuntimeError("lost acknowledgement")
+            with job._request(root, "paint", receipt):
+                pass
+            receipt.unlink()
             with self.assertRaises(job.StageError):
-                job._guard_external(root, "paint", [receipt])
-            files.atomic_json(receipt, {"state": "submitted_or_ambiguous"})
-            job._guard_external(root, "paint", [receipt])
+                with job._request(root, "paint", receipt):
+                    self.fail("reposted without receipt")
+            (root / "finished-native.glb").write_bytes(b"orphan")
+            with self.assertRaises(job.StageError):
+                job._guard_downstream(root, root / "work")
             sheet = root / "sheet.png"
             sheet.write_bytes(b"test")
             with self.assertRaises(ValueError):
@@ -73,7 +102,6 @@ class DecisionTests(unittest.TestCase):
         import numpy as np
         import trimesh
         from PIL import Image
-
 
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

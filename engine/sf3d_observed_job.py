@@ -1,6 +1,7 @@
 """One source, native SF3D material, and separately authorized observed hidden paint."""
 
 import argparse
+import contextlib
 import os
 import shutil
 import tempfile
@@ -41,19 +42,55 @@ def _checked_hash(path, expected):
         raise ValueError("保存した画像・形状・受付のチェックサムを確認できません。")
 
 
-def _guard_external(work, stage, receipt):
-    """Reserve only once; a lost private provider journal must not trigger another call."""
+@contextlib.contextmanager
+def _request(work, stage, journal, *, completed=None):
+    """Only a provider's pre-submit journal can turn a local failure into a used attempt."""
     fence = work / (stage + "-attempt.json")
     if fence.exists():
-        if files.read_json(fence) != {"stage": stage} or not any(
-            p.is_file() for p in receipt
+        old = files.read_json(fence)
+        if old.get("stage") != stage:
+            raise ValueError("受付の工程が一致しません。")
+        if (
+            not journal.is_file()
+            and not (completed and completed.is_file())
+            and old.get("state") != "local_preflight"
         ):
             raise StageError(
                 "sf3d_pending",
-                "受付履歴を復元できません。既存ジョブを保ち、再送を停止しました。",
+                "元の受付記録が失われました。重複送信を避けるため停止しました。",
             )
-        return
-    files.atomic_json(fence, {"stage": stage})
+    if journal.is_file() and stage in {"observation", "paint"}:
+        original = files.read_json(journal)
+        # The underlying providers explicitly recorded that consent was revoked BEFORE launching.
+        unused = (
+            stage == "observation"
+            and original.get("state") == "not_submitted_consent_revoked"
+            or stage == "paint"
+            and original.get("state") == "blocked_before_submission"
+            and original.get("attempts") == 0
+        )
+        if unused:
+            parent = journal.parent.resolve()
+            if (
+                not parent.is_relative_to(work.resolve())
+                or parent == work.resolve()
+                or journal.is_symlink()
+            ):
+                raise ValueError("想定外の受付パスです。")
+            archive = Path(tempfile.mkdtemp(prefix="unsent-", dir=work))
+            os.replace(parent, archive / parent.name)
+    files.atomic_json(fence, {"stage": stage, "state": "entered"})
+    try:
+        yield
+    except (ValueError, RuntimeError, OSError, TypeError, KeyError):
+        # All three providers guarantee journal fsync BEFORE their first submission.
+        # An existing malformed/partial journal is therefore always uncertain.
+        if not journal.exists() and not (completed and completed.exists()):
+            if not journal.parent.exists() or not any(journal.parent.iterdir()):
+                files.atomic_json(fence, {"stage": stage, "state": "local_preflight"})
+        raise
+    else:
+        files.atomic_json(fence, {"stage": stage, "state": "completed"})
 
 
 def _registration(native, matte, work):
@@ -157,15 +194,19 @@ def _appearance_mode(observations, submitted):
         raise NeedsReview(
             "写真に写っていない異なる機能面が推定されます。公式モデルを保管しました。"
         )
-    if observations["observed_face_cues"]:
+    if "repeated" in observations["observed_face_cues"]:
         return "guided_region"
-    from engine.hidden_review import FRONT_HARDWARE
+    if observations["observed_face_cues"]:
+        raise NeedsReview(
+            "局所的な正面の意匠だけを確認しました。裏面へ広げる根拠がありません。"
+        )
 
     unresolved = guess.get("reverse_candidates", ["unknown"]) != [
         "continuous_substrate"
     ]
     functional_parts = any(
-        p["kind"] in FRONT_HARDWARE for p in observations["visible_structures"]
+        p["kind"] in {"parallel_wires", "fasteners", "screen_or_controls"}
+        for p in observations["visible_structures"]
     )
     functional_edges = any(
         c["kind"]
@@ -482,11 +523,10 @@ def _export(
     proposal,
     orientation,
 ):
-    from engine.sf3d_shape_job import oriented_glb
-
     from engine.finish_export import embed_master
     from engine.native_region_paint import paint_native_region
     from engine.sf3d_provider import native_glb
+    from engine.sf3d_shape_job import oriented_glb
 
     native = base / "provider-native.glb"
     matte = base / "input-processed.png"
@@ -597,6 +637,120 @@ def _export(
     return meta
 
 
+HOLD_REASONS = {
+    "source_fit": "元写真の向きと公式モデルの対応に確認が必要です。",
+    "surface_uncertain": "写真に写っていない面の材質または機能を判断できません。",
+    "visible_material": "公式モデルの形状・可視材質・背面の検品に確認が必要です。",
+    "rear_layout": "推定した背面に正面の特徴が重なっている可能性があります。",
+    "native_projection": "推定塗装を元の形状・材質に安全に反映できませんでした。",
+}
+
+
+def _save_hold(out, base, key, stage):
+    from engine.sf3d_shape_job import valid as native_valid
+
+    original = files.read_json(base / "settings.json")
+    if original.get("input_sha256") != key["input_sha256"] or not native_valid(
+        base, original
+    ):
+        raise ValueError("保留モデルの元写真と公式データを検証できません。")
+    codes = {
+        "registration": "source_fit",
+        "native_inspection": "visible_material",
+        "orientation": "rear_layout",
+        "projection": "native_projection",
+    }
+    code = codes.get(stage, "surface_uncertain")
+    reason = HOLD_REASONS[code]
+    preview = base / "model.glb"
+    marker = {
+        "version": 1,
+        **key,
+        "shape_sha256": original["artifact_sha256"]["provider-native.glb"],
+        "preview_sha256": original["glb_sha256"],
+        "reason_code": code,
+        "reason": reason,
+        "stage": stage,
+    }
+    report_dir = out / "sf3d-observed-work"
+    with tempfile.TemporaryDirectory(dir=out) as tmp:
+        stage_dir = Path(tmp)
+        shutil.copyfile(preview, stage_dir / "review-native.glb")
+        _checked_hash(stage_dir / "review-native.glb", marker["preview_sha256"])
+        if (
+            stage == "native_inspection"
+            and (report_dir / "native-material.json").exists()
+        ):
+            check = files.read_json(report_dir / "native-material.json")
+            if (
+                check.get("model_sha256") == marker["preview_sha256"]
+                and check.get("source_sha256") == key["input_sha256"]
+            ):
+                shutil.copyfile(
+                    report_dir / "native-inspection.png",
+                    stage_dir / "review-native.png",
+                )
+                _checked_hash(
+                    stage_dir / "review-native.png", check["inspection_sha256"]
+                )
+                marker["image_sha256"] = check["inspection_sha256"]
+        files.atomic_json(stage_dir / "review-hold.json", marker)
+        os.replace(stage_dir / "review-native.glb", out / "review-native.glb")
+        if "image_sha256" in marker:
+            os.replace(stage_dir / "review-native.png", out / "review-native.png")
+        os.replace(stage_dir / "review-hold.json", out / "review-hold.json")
+
+
+def _guard_downstream(out, work):
+    """Surviving published or later-stage evidence forbids creating replacement provider jobs."""
+    published = any(
+        (out / name).exists()
+        for name in ARTIFACTS
+        | NATIVE_ARTIFACTS
+        | {"review-native.glb", "review-hold.json", "review-native.png"}
+    )
+    account = work / "appearance"
+    later = any(
+        (work / name).exists()
+        for name in (
+            "observation-attempt.json",
+            "proxy",
+            "registration.json",
+            "orientation",
+        )
+    )
+    received_native = (work / "native/settings.json").is_file() or (
+        work / "native/sf3d-work/provider/provider.json"
+    ).is_file()
+    if (published or later) and (
+        not (work / "identity.json").is_file() or not received_native
+    ):
+        raise StageError(
+            "sf3d_pending",
+            "既存の成果物に対応する公式形状の受付が失われました。再送を停止しました。",
+        )
+    if (
+        published
+        or any(
+            (account / n).exists()
+            for n in ("observation-seal.json", "guides", "guided-paint")
+        )
+    ) and not (account / "photo-observer/receipt.json").is_file():
+        raise StageError(
+            "sf3d_pending", "元の写真観察の受付を確認できません。再送を停止しました。"
+        )
+    if (
+        any(
+            (out / name).exists()
+            for name in ("finished-native.glb", "inferred-paint.png", "region.json")
+        )
+        and not (account / "guided-paint/receipt.json").is_file()
+    ):
+        raise StageError(
+            "sf3d_pending", "元の推定画像の受付を確認できません。再送を停止しました。"
+        )
+
+
 def run(source, out, *, setup, progress=None, cancelled=None):
     from engine import guided_shape_job, sf3d_shape_job
     from engine.guided_provider import generate_guided_paint
@@ -615,6 +769,7 @@ def run(source, out, *, setup, progress=None, cancelled=None):
             raise ValueError("受付済みの元画像が異なります。")
         if (out / "settings.json").is_file():
             return _validate_result(out, key["input_sha256"])
+        _guard_downstream(out, work)
         files.atomic_json(identity, key)
         stage = "consent"
 
@@ -634,37 +789,38 @@ def run(source, out, *, setup, progress=None, cancelled=None):
         try:
             _consent(setup)
             enter("native")
-            _guard_external(
+            with _request(
                 work,
                 "shape",
-                (base / "settings.json", base / "sf3d-work/provider/provider.json"),
-            )
-            orig = sf3d_shape_job.run(
-                source,
-                base,
-                setup=setup,
-                progress=progress,
-                cancelled=cancelled,
-                pipeline=PIPELINE,
-            )
+                base / "sf3d-work/provider/provider.json",
+                completed=base / "settings.json",
+            ):
+                orig = sf3d_shape_job.run(
+                    source,
+                    base,
+                    setup=setup,
+                    progress=progress,
+                    cancelled=cancelled,
+                    pipeline=PIPELINE,
+                )
             if orig["input_sha256"] != key["input_sha256"]:
                 raise ValueError("提供元の元画像ハッシュが一致しません。")
             enter("observation")
             # Keep the observer's own downstream markers separate from local native shape artifacts.
             account = work / "appearance"
             account.mkdir(exist_ok=True)
-            _guard_external(
-                work, "observation", (account / "photo-observer/receipt.json",)
-            )
-            observations, observation = guided_shape_job._chatgpt_observations(
-                source, account, key["input_sha256"], setup, pipeline=PIPELINE
-            )
+            with _request(work, "observation", account / "photo-observer/receipt.json"):
+                observations, observation = guided_shape_job._chatgpt_observations(
+                    source, account, key["input_sha256"], setup, pipeline=PIPELINE
+                )
             native = base / "provider-native.glb"
             matte = base / "input-processed.png"
+            enter("registration")
             reg = _registration(native, matte, work)
             submitted = (account / "guided-paint").exists() or (
                 work / "paint-attempt.json"
             ).exists()
+            stage = "observation"
             mode = _appearance_mode(observations, submitted)
             if mode == "native_material":
                 enter("native_inspection")
@@ -700,15 +856,15 @@ def run(source, out, *, setup, progress=None, cancelled=None):
                 raise ValueError("受付した観察結果とガイドが一致しません。")
             enter("paint")
             _consent(setup)
-            _guard_external(work, "paint", (account / "guided-paint/receipt.json",))
-            proposal = generate_guided_paint(
-                source,
-                guides / "guides.png",
-                guides / "request-guide.json",
-                account,
-                setup=setup,
-                pipeline=PIPELINE,
-            )
+            with _request(work, "paint", account / "guided-paint/receipt.json"):
+                proposal = generate_guided_paint(
+                    source,
+                    guides / "guides.png",
+                    guides / "request-guide.json",
+                    account,
+                    setup=setup,
+                    pipeline=PIPELINE,
+                )
             sheet = Path(proposal["sheet"])
             _verify_proposal(proposal["provenance"], sheet, layout, observations)
             enter("orientation")
@@ -754,6 +910,7 @@ def run(source, out, *, setup, progress=None, cancelled=None):
             return meta
         except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
             if isinstance(exc, NeedsReview):
+                _save_hold(out, base, key, stage)
                 status, code = "needs_review", "sf3d_observed_review"
             elif (
                 isinstance(exc, (Pending, InterruptedError))
