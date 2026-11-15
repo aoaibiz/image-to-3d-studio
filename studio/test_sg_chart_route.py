@@ -1,5 +1,6 @@
 """Verify consent and the normal Studio job entry before any external work."""
 
+import http.client
 import json
 import tempfile
 import threading
@@ -10,9 +11,46 @@ from unittest.mock import patch
 from engine.pipeline import OBSERVED_PIPELINE, SG_CHART_PIPELINE
 from studio.configure import agreement, configure, read_pipeline, valid_agreement
 from studio.core import JobCore
+from studio.server import Server
 
 
 class ChartRoute(unittest.TestCase):
+    def test_http_engine_reports_local_shape_and_limits_the_chart(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = root / "jobs"
+            configure(
+                store,
+                "triposg-chart",
+                chatgpt_photo_analysis=True,
+                allow_send_to_openai=True,
+            )
+            core = JobCore(root, directory=store, runner=lambda _: None)
+            server = Server(("127.0.0.1", 0), core)
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            try:
+                conn = http.client.HTTPConnection(
+                    "127.0.0.1", server.server_port, timeout=3
+                )
+                conn.request("GET", "/api/engine")
+                res = conn.getresponse()
+                data = json.loads(res.read())
+                conn.close()
+                self.assertEqual(res.status, 200)
+                self.assertEqual(data["shape"], "local TripoSG")
+                self.assertEqual(data["pipeline"], SG_CHART_PIPELINE)
+                self.assertEqual(data["recipient"], "OpenAI ChatGPT")
+                self.assertEqual(data["max_image_generations_per_job"], 1)
+                self.assertEqual(
+                    data["paint_guide_recipes"], ["source-anchored-surface-chart"]
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
+                core.close()
+
     def test_separate_account_consent_and_pinned_worker(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -199,7 +199,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, space_engine_info(pipeline))
                 return
             self.send_json(200, {"pipeline": pipeline, "local": pipeline not in GUIDED_PIPELINES,
-                                 **({"recipient": "OpenAI ChatGPT"} if pipeline in GUIDED_PIPELINES else {})})
+                                 **({"recipient": "OpenAI ChatGPT"} if pipeline in GUIDED_PIPELINES else {}),
+                                 **({"shape": "local TripoSG", "paint_guide_recipes": ["source-anchored-surface-chart"],
+                                     "max_photo_observations_per_job": 1, "max_image_generations_per_job": 1}
+                                    if pipeline == SG_CHART_PIPELINE else {})})
             return
         if path == "/api/doctor":
             if self.server.core.pipeline in SPACE_PIPELINES:
