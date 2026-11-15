@@ -99,7 +99,9 @@ class CoreTests(unittest.TestCase):
 print("segmenting source")
 print(json.dumps({"event":"progress","stage":"denoise","step":7,"total":50}))
 print(json.dumps({"event":"progress","stage":"denoise","step":88,"total":50}))
+print(json.dumps({"event":"waiting_for_memory","stage":"denoise","available_gib":1.45,"required_gib":6.5}))
 print(json.dumps({"event":"resumed","stage":"surface"}))
+print(json.dumps({"event":"stage","stage":"surface"}))
 print(json.dumps({"event":"studio_error","code":"shape_appearance","detail":"secret-detail"}))
 raise SystemExit(1)
 """
@@ -109,6 +111,8 @@ raise SystemExit(1)
         stages = [e["payload"]["stage"] for e in self.core.events(job["id"], 0)]
         self.assertIn("shape step 7/50", stages)
         self.assertIn("resuming shape", stages)
+        self.assertIn("waiting for memory 1.45/6.50", stages)
+        self.assertIn("extracting mesh", stages)
         self.assertNotIn("shape step 88/50", stages)
 
     def test_finished_shape_requires_hash_bound_history_and_master(self):

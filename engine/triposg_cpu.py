@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -22,6 +23,8 @@ WEIGHT_SHA256 = {
 }
 SOURCE_TREE = "7de3d8ce787544d94246daeb8c13843c34dff7d78404535fdbd9c09326748673"
 CONFIG_TREE = "a3058aab39def64c283e2b36fa43e3d5cf68a6ec5c2d39f17313772a3058e14c"
+STAGE_START_GIB = 6
+MEMORY_WAIT_SECONDS = 600
 
 
 def emit(event, **details):
@@ -99,10 +102,12 @@ def receipt_path(path):
     return path.with_name(path.name + ".json")
 
 
-def valid_artifact(path, job_key):
+def valid_artifact(path, job_key, **expected):
     try:
         meta = read_json(receipt_path(path))
-        if isinstance(meta, dict) and meta.get("job_key") == job_key and meta.get("sha256") == digest(path):
+        if (isinstance(meta, dict) and meta.get("job_key") == job_key
+                and all(meta.get(key) == value for key, value in expected.items())
+                and meta.get("sha256") == digest(path)):
             return meta
     except (OSError, KeyError, ValueError):
         pass
@@ -166,23 +171,57 @@ def prepare_input(source):
         edge[:, [0, -1]] = matches[:, [0, -1]]
         alpha = Image.fromarray((~binary_propagation(edge, mask=matches)).astype("uint8") * 255)
         image.putalpha(alpha)
-    box = alpha.getbbox()
+    # Low-alpha background noise must not determine the subject's framing.
+    # Retain the original soft matte when compositing the resulting viewport.
+    box = alpha.point(lambda value: 255 if value >= 150 else 0).getbbox()
     if not box:
-        raise ValueError("入力画像に前景がありません。")
-    image = image.crop(box)
-    side = max(1, int(max(image.size) * 1.2))
-    padded = Image.new("RGB", (side, side), "white")
-    padded.paste(image, ((side - image.width) // 2, (side - image.height) // 2), image.getchannel("A"))
+        raise ValueError("入力画像に十分な不透明度の前景がありません。")
+    width, height = box[2] - box[0], box[3] - box[1]
+    side = max(1, int(max(width, height) * 1.2))
+    left = box[0] - (side - width) // 2
+    top = box[1] - (side - height) // 2
+    region = (max(0, left), max(0, top), min(image.width, left + side), min(image.height, top + side))
+    patch = image.crop(region)
+    # A very wide photograph can have few pixels but an enormous square bounding canvas.
+    # Keep ordinary images pixel-identical and downsample the intersecting strip before padding.
+    canvas_side = side if side <= 4096 else 768
+    scale = canvas_side / side
+    if scale < 1:
+        size = tuple(max(1, round(value * scale)) for value in patch.size)
+        patch = patch.resize(size, Image.Resampling.BICUBIC)
+    padded = Image.new("RGB", (canvas_side, canvas_side), "white")
+    offset = (round((region[0] - left) * scale), round((region[1] - top) * scale))
+    padded.paste(patch, offset, patch.getchannel("A"))
     padded.thumbnail((768, 768), Image.Resampling.BICUBIC)
     return padded
 
 
-def guard_ram(gib):
+class RunnerVersionMismatch(ValueError):
+    """An unfinished job belongs to another installed provider version."""
+
+
+class RamShortfall(MemoryError):
+    def __init__(self, available_gib, required_gib):
+        self.available_gib = available_gib
+        self.required_gib = required_gib
+        super().__init__(f"空きRAMが{available_gib:.2f} GiBです。{required_gib:g} GiB以上で同じジョブを再開できます。")
+
+
+class MemoryWaitExpired(RamShortfall):
+    def __str__(self):
+        return f"空きRAM待機が{MEMORY_WAIT_SECONDS}秒に達しました。{super().__str__()}"
+
+
+def available_ram_gib():
     import psutil
 
-    available = psutil.virtual_memory().available / 1024**3
+    return psutil.virtual_memory().available / 1024**3
+
+
+def guard_ram(gib):
+    available = available_ram_gib()
     if available < gib:
-        raise RuntimeError(f"空きRAMが{available:.2f} GiBです。{gib:g} GiB以上で既存ジョブを再開してください。")
+        raise RamShortfall(available, gib)
 
 
 def load_network(cls, weights, name):
@@ -232,6 +271,7 @@ def denoise(work, weights, job_key, settings):
     resume, checkpoint = latest_step(work, job_key)
     if checkpoint:
         noise = read_tensor(checkpoint)
+        emit("resumed", stage="denoise", step=resume, total=settings["steps"])
     else:
         rng = torch.Generator(device="cpu").manual_seed(settings["seed"])
         noise = torch.randn((1, settings["tokens"], 64), generator=rng, dtype=torch.bfloat16)
@@ -280,7 +320,7 @@ def extract(work, weights, job_key, settings):
     # Begin with a dense 65³ field so isolated parts and narrow gaps can seed refinement.
     for level in (64, 128, 256):
         field_path = work / f"field-{level}.npy"
-        if valid_artifact(field_path, job_key):
+        if valid_artifact(field_path, job_key, cells=level):
             field = np.load(field_path, allow_pickle=False)
         else:
             if field is None:
@@ -329,7 +369,7 @@ def extract(work, weights, job_key, settings):
          watertight=bool(mesh.is_watertight), appearance="untextured", visual_quality="needs_review")
 
 
-def watch_supervisor(pipe_fd):
+def watch_supervisor(pipe_fd, on_lost=None):
     """Notice anonymous-pipe EOF without locking Windows' CRT during native DLL imports."""
     if os.name == "nt":
         import ctypes
@@ -348,16 +388,23 @@ def watch_supervisor(pipe_fd):
         import select
 
         select.select([pipe_fd], [], [])
-    os._exit(130)
+    try:
+        if on_lost is not None:
+            on_lost()
+    finally:
+        os._exit(130)
 
 
 def stage_worker(stage, runtime, work):
     identity = read_json(work / "identity.json")
     if sys.stdin.buffer.readline().strip() != identity["job_key"].encode("ascii"):
         raise RuntimeError("ステージはジョブ管理プロセスから起動してください。")
-    threading.Thread(target=watch_supervisor, args=(sys.stdin.fileno(),), daemon=True).start()
+    start = time.monotonic()
+    def parent_lost():
+        record_stage(work, stage, identity["job_key"], start, "interrupted", 130, reason="parent_lost")
+    threading.Thread(target=watch_supervisor, args=(sys.stdin.fileno(), parent_lost), daemon=True).start()
     sys.path.insert(0, str(runtime / "source"))
-    guard_ram(6)
+    guard_ram(STAGE_START_GIB)
     import torch
 
     settings = identity["settings"]
@@ -374,38 +421,130 @@ def stage_worker(stage, runtime, work):
             extract(work, weights, key, settings)
 
 
+def record_stage(work, stage, job_key, start, outcome, code, **details):
+    record = {"stage": stage, "outcome": outcome, "seconds": round(time.monotonic() - start, 3),
+              "exit_code": code, "job_key": job_key, "finished_unix": time.time(), **details}
+    if outcome != "completed":
+        # This exit-time sample is separate from the worker's pre-exit memory guard.
+        with contextlib.suppress(ImportError, OSError, MemoryError):
+            record["available_gib_at_exit"] = round(available_ram_gib(), 3)
+    with (work / "timings.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record) + "\n")
+
+
+def relay_worker(stream, stage, failure):
+    """Forward the local worker's typed events without persisting arbitrary process output."""
+    for line in stream:
+        try:
+            msg = json.loads(line)
+        except (ValueError, UnicodeError):
+            continue
+        if not isinstance(msg, dict) or msg.get("stage") != stage:
+            continue
+        event = msg.get("event")
+        if event in ("progress", "resumed"):
+            counts = {k: msg[k] for k in ("step", "total", "cells", "queried")
+                      if type(msg.get(k)) is int and msg[k] >= 0}
+            emit(event, stage=stage, **counts)
+        elif event == "resource_shortfall":
+            values = [msg.get(k) for k in ("available_gib", "required_gib")]
+            if all(type(v) in (int, float) and math.isfinite(v) for v in values) and 0 <= values[0] <= values[1]:
+                failure.update(reason=event, available_gib=values[0], required_gib=values[1])
+                emit(event, stage=stage, available_gib=values[0], required_gib=values[1])
+        elif event == "worker_failure" and msg.get("reason") in ("dependency_unavailable", "worker_error"):
+            failure["reason"] = msg["reason"]
+
+
 def supervise_stage(stage, runtime, work, interpreter, cancel_file, settings, job_key):
+    if cancel_file is not None and cancel_file.exists():
+        raise InterruptedError("ジョブはキャンセルされています。途中状態を保存しました。")
     command = [str(interpreter), str(Path(__file__).resolve()), "_stage", stage, str(runtime), str(work)]
     env = dict(os.environ, OMP_NUM_THREADS=str(settings["threads"]), OPENBLAS_NUM_THREADS="1",
                HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", PYTHONNOUSERSITE="1")
     emit("stage", stage=stage)
     start = time.monotonic()
-    child = subprocess.Popen(command, stdin=subprocess.PIPE, env=env)
     outcome = "interrupted"
+    failure = {}
+    code = None
+    child = None
+    reader = None
     try:
+        try:
+            child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, env=env)
+        except OSError as exc:
+            failure["reason"] = "worker_launch_failed"
+            raise RuntimeError("形状生成の子プロセスを開始できません。ランタイムを確認してください。") from exc
+        reader = threading.Thread(target=relay_worker, args=(child.stdout, stage, failure), daemon=True)
+        reader.start()
         child.stdin.write(job_key.encode("ascii") + b"\n")
         child.stdin.flush()
         while True:
             try:
                 code = child.wait(timeout=0.75)
+                reader.join()
                 if code:
-                    raise RuntimeError(f"工程 {stage} が中断しました（終了コード {code}）。同じジョブから再開できます。")
+                    if code == 75 and failure.get("reason") == "resource_shortfall":
+                        raise RamShortfall(failure["available_gib"], failure["required_gib"])
+                    failure.setdefault("reason", "native_exit" if code < 0 or code >= 0xC0000000 else "worker_exit")
+                    raise RuntimeError(f"工程 {stage} が中断しました（{failure['reason']}・終了コード {code}）。"
+                                       "同じジョブから再開できます。")
                 outcome = "completed"
                 break
             except subprocess.TimeoutExpired:
                 if cancel_file is not None and cancel_file.exists():
                     outcome = "cancelled"
+                    failure["reason"] = "cancelled"
                     raise InterruptedError("ジョブをキャンセルしました。途中状態を保存しました。")
     finally:
-        child.stdin.close()
-        if child.poll() is None:
-            child.terminate()
-        child.wait()
-        history = work / "timings.jsonl"
-        record = {"stage": stage, "outcome": outcome, "seconds": round(time.monotonic() - start, 3),
-                  "job_key": job_key, "finished_unix": time.time()}
-        with history.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(record) + "\n")
+        if child is not None:
+            if child.poll() is None:
+                child.terminate()
+            code = child.wait()
+            with contextlib.suppress(OSError):
+                child.stdin.close()
+            if reader is not None:
+                reader.join()
+            child.stdout.close()
+        if outcome == "interrupted":
+            failure.setdefault("reason", "worker_exit")
+        record_stage(work, stage, job_key, start, outcome, code, **failure)
+
+
+def wait_for_memory(stage, shortfall, cancel_file):
+    # The child checks before importing torch; leave 0.5 GiB margin for startup fluctuations.
+    required = max(STAGE_START_GIB, shortfall.required_gib) + 0.5
+    deadline = time.monotonic() + MEMORY_WAIT_SECONDS
+    emit("waiting_for_memory", stage=stage, available_gib=shortfall.available_gib,
+         required_gib=required, max_wait_seconds=MEMORY_WAIT_SECONDS)
+    consecutive = 0
+    while True:
+        if cancel_file is not None and cancel_file.exists():
+            raise InterruptedError("空きRAMの待機をキャンセルしました。同じジョブから再開できます。")
+        available = available_ram_gib()
+        if time.monotonic() >= deadline:
+            raise MemoryWaitExpired(available, required)
+        consecutive = consecutive + 1 if available >= required else 0
+        if consecutive >= 2:
+            return
+        time.sleep(min(2, max(0, deadline - time.monotonic())))
+
+
+def run_stage(stage, runtime, work, interpreter, cancel_file, settings, job_key):
+    try:
+        supervise_stage(stage, runtime, work, interpreter, cancel_file, settings, job_key)
+    except RamShortfall as exc:
+        start = time.monotonic()
+        try:
+            wait_for_memory(stage, exc, cancel_file)
+        except (MemoryWaitExpired, InterruptedError) as stop:
+            if isinstance(stop, MemoryWaitExpired):
+                record_stage(work, stage, job_key, start, "paused", None, reason="memory_wait_timeout",
+                             available_gib=stop.available_gib, required_gib=stop.required_gib)
+            else:
+                record_stage(work, stage, job_key, start, "paused", None, reason="cancelled")
+            raise
+        supervise_stage(stage, runtime, work, interpreter, cancel_file, settings, job_key)
 
 
 def runtime_python(runtime):
@@ -422,6 +561,14 @@ def installed_versions(interpreter):
     result = subprocess.run([str(interpreter), "-I", "-c", command, *packages],
                             check=True, capture_output=True, text=True, timeout=30)
     return json.loads(result.stdout)
+
+
+def stage_receipt(stage, artifact, job_key, cells):
+    if stage == "surface":
+        if not valid_artifact(artifact.parent / f"field-{cells}.npy", job_key, cells=cells):
+            return None
+        return valid_artifact(artifact, job_key, cells=cells)
+    return valid_artifact(artifact, job_key)
 
 
 def generate(image, work, output, runtime, cancel_file=None, seed=42, cells=256, threads=4):
@@ -447,8 +594,14 @@ def generate(image, work, output, runtime, cancel_file=None, seed=42, cells=256,
         job_key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         identity["job_key"] = job_key
         state = work / "identity.json"
-        if state.is_file() and read_json(state) != identity:
-            raise ValueError("作業場所に別の入力・設定・実装のジョブがあります。新しい作業場所を指定してください。")
+        if state.is_file():
+            previous = read_json(state)
+            if previous != identity:
+                if isinstance(previous, dict) and previous.get("runner_sha256") != identity["runner_sha256"]:
+                    raise RunnerVersionMismatch("このジョブの再開には、以前のリリースの triposg_cpu.py "
+                                     f"(SHA256={previous.get('runner_sha256')}) と元の入力・設定・環境が必要です。"
+                                     "このバージョンで新規生成する場合は別の作業場所を指定してください。")
+                raise ValueError("作業場所に別の入力・設定・環境のジョブがあります。新しい作業場所を指定してください。")
         atomic_json(state, identity)
         snapshot = work / "input.image"
         if not snapshot.is_file() or digest(snapshot) != identity["input_sha256"]:
@@ -462,14 +615,15 @@ def generate(image, work, output, runtime, cancel_file=None, seed=42, cells=256,
             artifact = work / name
             if cancel_file is not None and cancel_file.exists():
                 raise InterruptedError("ジョブをキャンセルしました。途中状態を保存しました。")
-            if not valid_artifact(artifact, job_key):
-                supervise_stage(stage, runtime, work, interpreter, cancel_file, settings, job_key)
-                if not valid_artifact(artifact, job_key):
+            result = stage_receipt(stage, artifact, job_key, cells)
+            if not result:
+                run_stage(stage, runtime, work, interpreter, cancel_file, settings, job_key)
+                result = stage_receipt(stage, artifact, job_key, cells)
+                if not result:
                     raise RuntimeError(f"工程 {stage} の成果物を検証できませんでした。")
             else:
                 emit("resumed", stage=stage)
         raw = work / "raw-shape.glb"
-        result = valid_artifact(raw, job_key)
         output.parent.mkdir(parents=True, exist_ok=True)
         if output != raw:
             tmp = output.with_name(f".{output.name}.{job_key[:16]}.part")
@@ -495,7 +649,18 @@ def main():
     worker.add_argument("work", type=Path)
     args = ap.parse_args()
     if args.command == "_stage":
-        stage_worker(args.stage, args.runtime, args.work)
+        try:
+            stage_worker(args.stage, args.runtime, args.work)
+        except RamShortfall as exc:
+            emit("resource_shortfall", stage=args.stage, available_gib=exc.available_gib, required_gib=exc.required_gib)
+            raise SystemExit(75)
+        except (ImportError, OSError) as exc:
+            missing = isinstance(exc, ImportError) or getattr(exc, "winerror", None) in (126, 127, 193, 1114)
+            emit("worker_failure", stage=args.stage, reason="dependency_unavailable" if missing else "worker_error")
+            raise SystemExit(1)
+        except Exception:
+            emit("worker_failure", stage=args.stage, reason="worker_error")
+            raise SystemExit(1)
     else:
         generate(args.image, args.work_dir, args.output, args.runtime, args.cancel_file, args.seed, args.cells, args.threads)
 

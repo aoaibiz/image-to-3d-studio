@@ -149,7 +149,9 @@ async function refresh(id) {
   showControls(job);
   if (job.status !== 'needs_review') document.querySelector('#appearance-sheet').hidden = true;
   const savedStep = job.status === 'running' && /^shape step (\d+)\/(\d+)$/.exec(job.stage);
-  const label = savedStep ? stages['generating shape'] : stages[job.stage] || job.stage || job.status;
+  const memoryWait = /^waiting for memory (\d+\.\d{2})\/(\d+\.\d{2})$/.exec(job.stage);
+  let label = savedStep ? stages['generating shape'] : stages[job.stage] || job.stage || job.status;
+  if (memoryWait) label = `空きメモリを待っています（待機開始時 ${memoryWait[1]} GiB、再開の目安 ${memoryWait[2]} GiB）`;
   const progress = savedStep ? {step: Number(savedStep[1]), total: Number(savedStep[2])} : job.progress;
   const steps = job.status === 'running' && Number.isSafeInteger(progress?.step) && Number.isSafeInteger(progress?.total)
     && progress.total > 0 && progress.step >= 0 && progress.step <= progress.total

@@ -129,7 +129,11 @@ def run(source, out, resolution, texture_size):
             receipt = sg.generate(png, provider, raw, runtime, cells=resolution)
         except subprocess.SubprocessError as exc:
             raise StageError("shape_setup", str(exc)) from exc
-        except (OSError, RuntimeError, ValueError, MemoryError) as exc:
+        except sg.RunnerVersionMismatch as exc:
+            raise StageError("shape_version", str(exc)) from exc
+        except MemoryError as exc:
+            raise StageError("shape_memory", str(exc)) from exc
+        except (OSError, RuntimeError, ValueError) as exc:
             raise StageError("shape_inference", str(exc)) from exc
         identity = sg.read_json(provider / "identity.json")
         if (

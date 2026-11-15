@@ -35,7 +35,9 @@ class PipelineConflict(JobError):
 SHAPE_OUTPUTS = {"shape-master.glb", "appearance.json", "generation.json", "input-processed.png"}
 SHAPE_ERRORS = {
     "shape_setup": "TripoSG のローカル環境を確認し、オプションのセットアップ後に再開してください。",
+    "shape_memory": "空きメモリが足りず、計算を一時停止しました。ほかの作業が終わったら同じジョブの「再開」を押してください。",
     "shape_foreground": "画像の切り抜きに失敗しました。背景と被写体、U2Net の設定を確認してください。",
+    "shape_version": "このジョブは更新前のエンジンで開始されました。受付時のインストールで同じジョブを再開するか、現在の版で新しいジョブを開始してください。",
     "shape_inference": "形状生成に失敗しました。TripoSG のモデル、RAM と空き容量を確認して同じジョブを再開してください。",
     "shape_registration": "生成した形状を写真の輪郭に重ねられず、着色を停止しました。切り抜きを確認してください。別の画像で試す場合は新しいジョブを作成してください。",
     "shape_appearance": "形状の着色に失敗しました。保存した形状と入力画像を確認して再開してください。",
@@ -53,8 +55,16 @@ def _shape_notice(line):
     kind, stage = event.get("event"), event.get("stage")
     if kind == "studio_error" and isinstance(event.get("code"), str):
         return None, SHAPE_ERRORS.get(event["code"])
+    if kind == "waiting_for_memory" and stage in ("encode", "denoise", "surface"):
+        free, needed = event.get("available_gib"), event.get("required_gib")
+        if all(type(value) in (int, float) and 0 <= value < 100000 for value in (free, needed)):
+            return f"waiting for memory {free:.2f}/{needed:.2f}", None
     if kind == "resumed" and stage in ("encode", "denoise", "surface"):
         return "resuming shape", None
+    if kind == "stage" and stage in ("verify", "encode", "denoise", "surface"):
+        stages = {"verify": "initializing model", "encode": "preprocessing",
+                  "denoise": "generating shape", "surface": "extracting mesh"}
+        return stages[stage], None
     if kind == "progress" and stage == "denoise":
         step, total = event.get("step"), event.get("total")
         if type(step) is int and type(total) is int and 0 < step <= total <= 10000:
