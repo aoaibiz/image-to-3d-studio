@@ -1,0 +1,56 @@
+{
+  "synthetic": false,
+  "input": "model.glb",
+  "sha256": "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d",
+  "front": "+Z",
+  "projection": "orthographic",
+  "lighting": "studio",
+  "textureCount": 1,
+  "clayMetrics": {
+    "count": 55247,
+    "mean": 197.02099382775916,
+    "standardDeviation": 47.67663180585206,
+    "brightFraction": 1
+  },
+  "dragRadians": -9.451629180030835,
+  "zoomBefore": 1,
+  "zoomAfter": 1.1663507799970843,
+  "panTarget": [
+    0.21400367399015613,
+    0.009108781814575195,
+    0.009365956768548137
+  ],
+  "resetTarget": [
+    0.03399541974067688,
+    0.009108781814575195,
+    0.004531353712081909
+  ],
+  "downloadByteIdentical": true,
+  "externalURIRejected": true,
+  "externalRequests": [],
+  "failedRequests": [],
+  "offlinePreviewVerified": true,
+  "texturedFixtureVerified": false,
+  "files": [
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_front_material.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_back_material.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_left_material.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_right_material.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_top_material.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_bottom_material.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_front-right_material.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_front-left_material.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_back-right_material.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_back-left_material.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_front_clay.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_back_clay.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_left_clay.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_right_clay.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_top_clay.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_bottom_clay.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_front-right_clay.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_front-left_clay.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_back-right_clay.png",
+    "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d_back-left_clay.png"
+  ]
+}

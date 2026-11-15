@@ -1,0 +1,49 @@
+{
+  "model": "stabilityai/TripoSR",
+  "source_commit": "107cefdc244c39106fa830359024f6a2f1c78871",
+  "device": "cpu",
+  "export_material": {
+    "smooth_normals": true,
+    "metallic_factor": 0.0,
+    "roughness_factor": 0.52,
+    "base_color_factor": [
+      1,
+      1,
+      1,
+      1
+    ]
+  },
+  "marching_cubes_resolution": 96,
+  "texture_size": 1024,
+  "input_sha256": "53f49ce1d6897430baf5ff4818be0a3263e17bdf0280d11ff1ace09169dbf85d",
+  "reference_refinement": {
+    "source_glb_sha256": "c75de2d6a6af76d44d36d2c93dc890dea3da4525fb1f8c170dc0ed1d8829a501",
+    "reference_sha256": "383abfd11055ceb66506c666d59a242a9fa4bda9d4c5a77ff0296e851ccfbfe2",
+    "output_glb_sha256": "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d",
+    "iou": 0.9008194051168967,
+    "min_iou": 0.7,
+    "camera": "+Z orthographic, +X right, +Y up",
+    "camera_scale": 407.1242787928097,
+    "registration": {
+      "uniform_factor": 1.05,
+      "dx": 0,
+      "dy": 0
+    },
+    "z_tolerance": 0.004967325329780579,
+    "atlas_texels_updated": 204725,
+    "scope": "visible front only, normal and alpha-border feather; back remains inferred",
+    "appearance": "pending human review",
+    "status": "used",
+    "elapsed_seconds": 40.5
+  },
+  "raw_glb_sha256": "c75de2d6a6af76d44d36d2c93dc890dea3da4525fb1f8c170dc0ed1d8829a501",
+  "raw_export": "raw-export/7d64eb39e43e4fbbaedf00c89dd3277a",
+  "appearance": "pending human review",
+  "model_sha256": "429e2c6b22a0923967459de24d67f05962b235f79cde6b032aa7ed2ffcd970ee",
+  "glb_sha256": "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d",
+  "vertices": 10748,
+  "faces": 14988,
+  "elapsed_seconds": 131.8,
+  "coordinates": "native (x,y,z) to glTF (y,z,x); native +Z up and +X camera become glTF +Y up and +Z camera; no scale",
+  "background_removal": true
+}

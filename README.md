@@ -2,6 +2,12 @@
 
 画像を1枚貼り付け、ローカル CPU でテクスチャ付き GLB を生成し、その場でドラッグして回す Windows 用の実験版です。背面・底面は推定形状で、寸法は相対値です。**公開した車のデモは生成・表示の動作例です。フィギュアとしての外観は検品不合格です。**
 
+## 生成済みのモデルを回す
+
+[比較用の猫を回す](https://aoaibiz.github.io/image-to-3d-studio/) ・ [車を回す](https://aoaibiz.github.io/image-to-3d-studio/car.html) ・ [オフライン版と GLB をダウンロード](https://github.com/aoaibiz/image-to-3d-studio/releases/tag/v0.1.0-preview.1)
+
+猫は技術検証用に描いた別キャラクターです。フィギュアとして解釈した補助画像を使うと、頭部3断面の奥行き／幅が0.78〜0.85になりました。脚の接合部や底面は要確認です。[材質あり](demo/control-result/sheet-material.jpg) ・ [無地](demo/control-result/sheet-clay.jpg) ・ [来歴](demo/control-result/README.md)
+
 ## 起動する
 
 Windows 11 x64、Git、[uv](https://docs.astral.sh/uv/getting-started/installation/)、Node.js 22 と npm、WebGL を利用できる Chrome または Edge を用意してください。実測環境は Ryzen 7 255、RAM 29.8 GiB、Radeon 780M です。推論は CPU を使用します。初回に約1.68 GBの重みのほか、Python・依存パッケージ・検証ツールをダウンロードするため、数 GB の空き容量が必要です。

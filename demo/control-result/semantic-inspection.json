@@ -1,0 +1,175 @@
+{
+  "sha256": "e00aec257fbe4b26095fad91e6d54f3d5cf5df14b66d11e246e7d2d986d4839d",
+  "format": {
+    "status": "unknown",
+    "reason": "Khronos validator not run"
+  },
+  "geometry": {
+    "status": "review",
+    "regions": {
+      "head": {
+        "status": "pass",
+        "slices": [
+          {
+            "level": 0.17,
+            "depth": 0.41760827586380184,
+            "width": 0.4904933947518342,
+            "depth_ratio": 0.8514044844071577,
+            "status": "pass",
+            "local_depths": [
+              0.3813569707848463,
+              0.38220123447984355,
+              0.41760827586380184,
+              0.4257051317080148,
+              0.44568942920887544
+            ],
+            "closed": true,
+            "ambiguous": false
+          },
+          {
+            "level": 0.24,
+            "depth": 0.41224179136882205,
+            "width": 0.49001018562750775,
+            "depth_ratio": 0.8412922903651576,
+            "status": "pass",
+            "local_depths": [
+              0.3487494011896639,
+              0.3759436632560986,
+              0.41224179136882205,
+              0.42108425756990076,
+              0.4275027703720311
+            ],
+            "closed": true,
+            "ambiguous": false
+          },
+          {
+            "level": 0.31,
+            "depth": 0.36306985156693183,
+            "width": 0.463504116078714,
+            "depth_ratio": 0.7833152694274541,
+            "status": "pass",
+            "local_depths": [
+              0.33007864835350254,
+              0.357981838366592,
+              0.36306985156693183,
+              0.4082387525539669,
+              0.41243107301066406
+            ],
+            "closed": true,
+            "ambiguous": false
+          }
+        ]
+      },
+      "body": {
+        "status": "review",
+        "slices": [
+          {
+            "level": -0.23,
+            "depth": 0.3807627012098109,
+            "width": 0.4549624877825744,
+            "depth_ratio": 0.8369101001394572,
+            "status": "review",
+            "local_depths": [
+              0.31941580504075906,
+              0.33946504081723117,
+              0.3807627012098109,
+              0.39322779351364195,
+              0.42395016153310994
+            ],
+            "closed": false,
+            "ambiguous": false
+          },
+          {
+            "level": -0.14,
+            "depth": 0.39877255135359213,
+            "width": 0.471854897600677,
+            "depth_ratio": 0.8451169064500561,
+            "status": "review",
+            "local_depths": [
+              0.31202634793844386,
+              0.35946411923529453,
+              0.39877255135359213,
+              0.41787503533353665,
+              0.4274681473988098
+            ],
+            "closed": false,
+            "ambiguous": false
+          },
+          {
+            "level": -0.06,
+            "depth": 0.3697581566829966,
+            "width": 0.46402612712358976,
+            "depth_ratio": 0.7968477097939668,
+            "status": "review",
+            "local_depths": [
+              0.2969631010279436,
+              0.33487333928572716,
+              0.3697581566829966,
+              0.3742415361876055,
+              0.39427952821443146
+            ],
+            "closed": false,
+            "ambiguous": false
+          }
+        ]
+      }
+    },
+    "note": "Geometric heuristic only; segment boundaries and thresholds require human judgment."
+  },
+  "appearance": {
+    "status": "pending_review",
+    "reason": "Human inspection of hash-matched material and clay views required."
+  },
+  "profile": {
+    "subject": "cat",
+    "up_axis": 1,
+    "depth_axis": 2,
+    "regions": {
+      "head": {
+        "bounds": [
+          [
+            -0.35,
+            0.25
+          ],
+          [
+            0.1,
+            0.42
+          ],
+          [
+            -0.31,
+            0.31
+          ]
+        ],
+        "levels": [
+          0.17,
+          0.24,
+          0.31
+        ],
+        "min_depth_ratio": 0.58
+      },
+      "body": {
+        "bounds": [
+          [
+            -0.33,
+            0.18
+          ],
+          [
+            -0.29,
+            0.05
+          ],
+          [
+            -0.31,
+            0.31
+          ]
+        ],
+        "levels": [
+          -0.23,
+          -0.14,
+          -0.06
+        ],
+        "min_depth_ratio": 0.55
+      }
+    }
+  },
+  "created_at": "2026-11-15T06:28:08Z"
+}
