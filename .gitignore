@@ -6,6 +6,8 @@ private/
 __pycache__/
 *.py[cod]
 .env*
+host-access.token
+host-claim.json
 dist/
 test-results/
 .playwright/

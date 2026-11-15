@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from PIL import Image, PngImagePlugin
 
 from engine import host_paint as paint
@@ -106,7 +107,12 @@ class NativeHostTests(unittest.TestCase):
         self.assertEqual(submit({**headers,"X-Studio-Paint-Sha256": hashlib.sha256(b"bad").hexdigest()}, b"bad"), 400)
         self.assertEqual(submit(headers, self.png), 200)
         self.assertIn(b"needs_review", self.send("GET", path + "/events")[1])
+        # Restart may mark a committed result's queued worker as interrupted.
+        with self.core.lock:
+            self.core._update(path.rsplit("/", 1)[1], "interrupted", "interrupted")
         self.assertEqual(submit(headers, self.png), 200)
+        self.assertIn(b"needs_review", self.send("GET", path + "/events")[1])
+        self.assertEqual(json.loads(self.send("GET", path)[1])["job"]["status"], "needs_review")
         self.assertEqual(submit({**headers,"X-Studio-Tool-Call":"different"}, self.png), 400)
         self.assertNotIn(self.token.encode(), self.send("GET", path)[1])
         self.assertEqual(self.send("GET", path + "/artifacts/host-claim.json")[0], 404)
@@ -117,3 +123,25 @@ class NativeHostTests(unittest.TestCase):
         self.assertEqual(self.send("POST", path + "/host/claim", {"X-Studio-Host-Token":self.token})[0], 409)
         configure(self.store, "triposg")
         self.assertEqual(self.send("POST", path + "/host/claim", {"X-Studio-Host-Token":self.token})[0], 403)
+
+    def test_a_brief_is_bound_before_claim_and_cannot_replace_a_claimed_request(self):
+        work = self.root / "brief-job"
+        guide = work / "guides/guides.png"
+        guide.parent.mkdir(parents=True)
+        guide.write_bytes(self.png)
+        source = self.root / "source.jpg"
+        with Image.open(io.BytesIO(self.png)) as image:
+            image.convert("RGB").save(source, format="JPEG")
+        layout = {"photo_sha":digest(source), "model_sha":"3"*64, "guide_sha":digest(guide), "visual_brief":{"fixture":1}}
+        actual = paint.PROMPT + "\nVerified appearance constraints."
+        with patch("engine.guided_provider.appearance_prompt", create=True, return_value=(actual, "b"*64)) as build:
+            request = paint.prepare(work, source, guide, layout)
+            build.assert_called_once_with(paint.PROMPT, layout, layout["photo_sha"])
+        claim = paint.claim(work, "fixture")
+        self.assertEqual(claim["prompt"], actual)
+        self.assertEqual(claim["visual_brief_sha256"], "b"*64)
+        self.assertEqual(request["prompt_sha256"], hashlib.sha256(actual.encode()).hexdigest())
+        with patch("engine.guided_provider.appearance_prompt", create=True, return_value=(paint.PROMPT, "c"*64)):
+            with self.assertRaises(ValueError):
+                paint.prepare(work, source, guide, layout)
+        self.assertFalse(paint.claim(work, "fixture")["generate_once"])

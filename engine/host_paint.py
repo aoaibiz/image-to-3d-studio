@@ -24,6 +24,25 @@ SHA = re.compile(r"[a-f0-9]{64}")
 CALL = re.compile(r"[A-Za-z0-9_-]{1,160}")
 
 
+def _identity(request):
+    guide, photo = request["uploaded_png_sha256"]
+    if guide != request["guide_sha256"]:
+        raise ValueError("送信用ガイドの記録が一致しません。")
+    hashes = [request["photo_sha256"], photo, request["geometry_sha256"], guide, request["prompt_sha256"]]
+    if "visual_brief_sha256" in request:
+        hashes.append(request["visual_brief_sha256"])
+    if not all(isinstance(value, str) and SHA.fullmatch(value) for value in hashes):
+        raise ValueError("画像生成の入力ハッシュが無効です。")
+    return hashlib.sha256(json.dumps(hashes).encode()).hexdigest()
+
+
+def _request(work):
+    record = read_json(work / "host-input/request.json")
+    if record.get("input_sha256") != _identity(record):
+        raise ValueError("ホストに引き渡す依頼の識別子が一致しません。")
+    return record
+
+
 def authorize(directory, token):
     try:
         config = read_json(directory / "engine.json")
@@ -54,13 +73,18 @@ def prepare(work, source, guide, layout):
 
     if digest(source) != layout["photo_sha"] or digest(guide) != layout["guide_sha"]:
         raise ValueError("元写真またはガイドのハッシュが生成履歴と一致しません。")
+    prompt, brief_sha = PROMPT, None
+    if "visual_brief" in layout:
+        from engine.guided_provider import appearance_prompt
+        prompt, brief_sha = appearance_prompt(PROMPT, layout, layout["photo_sha"])
+    prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     folder = work / "host-input"
     if not folder.exists():
         with tempfile.TemporaryDirectory(dir=work) as tmp:
             stage = Path(tmp) / "input"
             stage.mkdir()
             with Image.open(source) as photo:
-                if (photo.format not in {"PNG", "WEBP", "JPEG"} or photo.n_frames != 1
+                if (photo.format not in {"PNG", "WEBP", "JPEG"} or getattr(photo, "n_frames", 1) != 1
                         or photo.width * photo.height > 40_000_000):
                     raise ValueError("40メガピクセル以下の静止画像を指定してください。")
                 normalized = ImageOps.exif_transpose(photo).convert("RGBA")
@@ -68,16 +92,19 @@ def prepare(work, source, guide, layout):
                 normalized.info.clear()
                 normalized.save(stage / "photo.png", format="PNG")
             photo_sha = digest(stage / "photo.png")
-            identity = [layout["photo_sha"], photo_sha, layout["model_sha"], layout["guide_sha"], PROMPT_SHA]
-            atomic_json(stage / "request.json", {
-                "input_sha256": hashlib.sha256(json.dumps(identity).encode()).hexdigest(),
+            (stage / "prompt.txt").write_bytes(prompt.encode("utf-8"))
+            request = {
                 "photo_sha256": layout["photo_sha"], "geometry_sha256": layout["model_sha"],
-                "guide_sha256": layout["guide_sha"], "prompt_sha256": PROMPT_SHA,
+                "guide_sha256": layout["guide_sha"], "prompt_sha256": prompt_sha,
+                **({"visual_brief_sha256": brief_sha} if brief_sha is not None else {}),
                 "uploaded_png_sha256": [layout["guide_sha"], photo_sha],
-            })
+            }
+            request["input_sha256"] = _identity(request)
+            atomic_json(stage / "request.json", request)
             os.replace(stage, folder)
-    request = read_json(folder / "request.json")
-    if (request["photo_sha256"] != layout["photo_sha"] or request["prompt_sha256"] != PROMPT_SHA
+    request = _request(work)
+    if (request["photo_sha256"] != layout["photo_sha"] or request["prompt_sha256"] != prompt_sha
+            or request.get("visual_brief_sha256") != brief_sha
             or request["geometry_sha256"] != layout["model_sha"]
             or request["guide_sha256"] != layout["guide_sha"]
             or request["uploaded_png_sha256"] != [digest(guide), digest(folder / "photo.png")]):
@@ -86,9 +113,13 @@ def prepare(work, source, guide, layout):
 
 
 def claim(work, job_id):
-    request = read_json(work / "host-input/request.json")
+    request = _request(work)
+    prompt_file = work / "host-input/prompt.txt"
+    # Older prepared jobs used the base instruction. Never migrate or reissue a claim.
+    prompt = prompt_file.read_bytes().decode("utf-8") if prompt_file.exists() else PROMPT
+    prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     files = [work / "guides/guides.png", work / "host-input/photo.png"]
-    if request["prompt_sha256"] != PROMPT_SHA or [digest(p) for p in files] != request["uploaded_png_sha256"]:
+    if request["prompt_sha256"] != prompt_sha or [digest(p) for p in files] != request["uploaded_png_sha256"]:
         raise ValueError("写真・ガイド・画像生成指示が受付時の記録と一致しません。")
     path = work / "host-claim.json"
     first = not path.exists()
@@ -99,9 +130,11 @@ def claim(work, job_id):
         raise ValueError("保存した受付と画像が一致しません。")
     reply = {"job_id": job_id, **saved, "generate_once": first}
     if first:
-        reply.update(prompt=PROMPT, prompt_sha256=PROMPT_SHA,
+        reply.update(prompt=prompt, prompt_sha256=prompt_sha,
                      referenced_image_paths=[str(path.resolve()) for path in files],
                      uploaded_png_sha256=request["uploaded_png_sha256"], recipient=AGREEMENT["recipient"])
+        if "visual_brief_sha256" in request:
+            reply["visual_brief_sha256"] = request["visual_brief_sha256"]
     return reply
 
 
@@ -112,7 +145,7 @@ def submit(work, claim_id, request_sha, sheet_sha, tool_call, png, *, validate=N
             and CALL.fullmatch(tool_call or "")):
         raise ValueError("受付番号、生成IDとSHA-256を確認してください。")
     saved = read_json(work / "host-claim.json")
-    request = read_json(work / "host-input/request.json")
+    request = _request(work)
     if (not hmac.compare_digest(claim_id, saved["claim_id"])
             or request_sha != saved["request_sha256"] or request_sha != request["input_sha256"]
             or hashlib.sha256(png).hexdigest() != sheet_sha):

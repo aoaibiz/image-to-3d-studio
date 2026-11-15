@@ -524,10 +524,10 @@ class JobCore:
                         not (work / "host-result/receipt.json").is_file()):
                     raise PipelineConflict("受付状態を確認してから同じジョブを続行してください。")
                 host_paint.submit(work, **submission, validate=self._validate_host_sheet)
-                if status == "awaiting_host_image":
+                if status in {"awaiting_host_image", "interrupted"}:
                     self._update(job_id, "queued", "queued")
                 return {"job": self.get(job_id)}
-            except (OSError, ValueError, RuntimeError, KeyError) as exc:
+            except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as exc:
                 raise JobError("ホストの受付、PNG、生成IDとハッシュを確認してください。") from exc
 
     def _validate_host_sheet(self, data):
