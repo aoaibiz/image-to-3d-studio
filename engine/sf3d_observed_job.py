@@ -85,9 +85,12 @@ def _request(work, stage, journal, *, completed=None):
     except (ValueError, RuntimeError, OSError, TypeError, KeyError):
         # All three providers guarantee journal fsync BEFORE their first submission.
         # An existing malformed/partial journal is therefore always uncertain.
-        if not journal.exists() and not (completed and completed.exists()):
-            if not journal.parent.exists() or not any(journal.parent.iterdir()):
-                files.atomic_json(fence, {"stage": stage, "state": "local_preflight"})
+        if (
+            not journal.exists()
+            and not (completed and completed.exists())
+            and (not journal.parent.exists() or not any(journal.parent.iterdir()))
+        ):
+            files.atomic_json(fence, {"stage": stage, "state": "local_preflight"})
         raise
     else:
         files.atomic_json(fence, {"stage": stage, "state": "completed"})
@@ -334,10 +337,7 @@ def _native_inspection(base, reg, observations, report_dir):
     chroma = np.linalg.norm(errors[:, 1:], axis=1)
     median = float(np.median(chroma))
     p90 = float(np.percentile(chroma, 90))
-    if l > 32 or median > 18 or p90 > 38:
-        raise NeedsReview(
-            "公式モデルの可視表面の色と、元写真の色に大きな差があります。"
-        )
+    colour_hold = l > 32 or median > 18 or p90 > 38
     src, src_mask = hidden_review._canonical(photo[:, :, :3], mask)
     images = [front_rgb]
     clays = [front_clay]
@@ -369,6 +369,8 @@ def _native_inspection(base, reg, observations, report_dir):
                 src, src_mask, target, inner & (hidden_field >= 160)
             )
     status, hold, reason = hidden_review._diagnosis(list(scores.values()), observations)
+    if colour_hold:
+        hold, reason = True, "source_diffuse_disagreement"
     # Keep native material and clay diagnostics together, including in a withheld job.
     sheet = Image.fromarray(
         np.concatenate(
@@ -377,7 +379,9 @@ def _native_inspection(base, reg, observations, report_dir):
     )
     sheet.save(report_dir / "native-inspection.png")
     report = {
-        "decision": "no depicted focal or repeated pigment; measured native visible diffuse and silhouette agree",
+        "decision": "source_diffuse_disagreement"
+        if colour_hold
+        else "no additional pigment evidenced; inspect native material",
         "mode": "native_material",
         "source_sha256": observations["source_sha256"],
         "model_sha256": footprint["sha256"],
@@ -400,6 +404,10 @@ def _native_inspection(base, reg, observations, report_dir):
         "central_depth_span_fractions": sections,
     }
     files.atomic_json(report_dir / "native-material.json", report)
+    if colour_hold:
+        raise NeedsReview(
+            f"公式モデルと元写真の可視領域の色差が大きすぎます（明度75%点 {l:.1f}・色度90%点 {p90:.1f}）。"
+        )
     if hold:
         raise NeedsReview(
             "公式モデルの背面に前面の特徴が重なっています。検品画像を保存しました。"
@@ -703,49 +711,110 @@ def _save_hold(out, base, key, stage):
 
 def _guard_downstream(out, work):
     """Surviving published or later-stage evidence forbids creating replacement provider jobs."""
-    published = any(
-        (out / name).exists()
-        for name in ARTIFACTS
-        | NATIVE_ARTIFACTS
-        | {"review-native.glb", "review-hold.json", "review-native.png"}
-    )
     account = work / "appearance"
-    later = any(
-        (work / name).exists()
-        for name in (
-            "observation-attempt.json",
-            "proxy",
-            "registration.json",
-            "orientation",
-        )
+    private_shape = work / "native/sf3d-work/provider/provider.json"
+    observation = account / "photo-observer/receipt.json"
+    paint = account / "guided-paint/receipt.json"
+    state = (
+        files.read_json(work / "state.json") if (work / "state.json").is_file() else {}
     )
-    received_native = (work / "native/settings.json").is_file() or (
-        work / "native/sf3d-work/provider/provider.json"
-    ).is_file()
-    if (published or later) and (
-        not (work / "identity.json").is_file() or not received_native
-    ):
+    # Output is exclusively reserved for this job, including Studio's later HTML, PNG and QA reports.
+    published = any(p != work for p in out.iterdir())
+    has_native = (work / "native/settings.json").is_file() or private_shape.is_file()
+    post_native = (
+        published
+        or observation.exists()
+        or paint.exists()
+        or any(
+            (work / n).exists()
+            for n in (
+                "observation-attempt.json",
+                "registration.json",
+                "proxy",
+                "orientation",
+                "native-material.json",
+                "native-inspection.png",
+            )
+        )
+        or state.get("stage")
+        in {
+            "observation",
+            "registration",
+            "native_inspection",
+            "guides",
+            "paint",
+            "orientation",
+            "projection",
+            "export",
+        }
+    )
+    if post_native and (not (work / "identity.json").is_file() or not has_native):
         raise StageError(
             "sf3d_pending",
             "既存の成果物に対応する公式形状の受付が失われました。再送を停止しました。",
         )
-    if (
+    post_observation = (
         published
         or any(
             (account / n).exists()
-            for n in ("observation-seal.json", "guides", "guided-paint")
+            for n in ("guides", "observation-seal.json", "guided-paint")
         )
-    ) and not (account / "photo-observer/receipt.json").is_file():
+        or any(
+            (work / n).exists()
+            for n in (
+                "proxy",
+                "orientation",
+                "registration.json",
+                "native-material.json",
+            )
+        )
+        or state.get("stage")
+        in {
+            "registration",
+            "native_inspection",
+            "guides",
+            "paint",
+            "orientation",
+            "projection",
+            "export",
+        }
+    )
+    if post_observation and not observation.is_file():
         raise StageError(
             "sf3d_pending", "元の写真観察の受付を確認できません。再送を停止しました。"
         )
-    if (
-        any(
-            (out / name).exists()
-            for name in ("finished-native.glb", "inferred-paint.png", "region.json")
+    hold_path = out / "review-hold.json"
+    hold = files.read_json(hold_path) if hold_path.is_file() else {}
+    proven_no_paint = (
+        (work / "native-material.json").is_file()
+        or (out / "native-material.json").is_file()
+        or (
+            hold.get("stage") in {"registration", "observation", "native_inspection"}
+            and not (work / "paint-attempt.json").exists()
         )
-        and not (account / "guided-paint/receipt.json").is_file()
-    ):
+    )
+    after_paint = (
+        (work / "orientation").exists()
+        or hold.get("stage") in {"orientation", "projection"}
+        or (
+            state.get("stage") in {"orientation", "projection"}
+            or state.get("stage") == "export"
+            and not proven_no_paint
+        )
+        or any(
+            (out / n).exists()
+            for n in (
+                "finished-native.glb",
+                "guided-views.png",
+                "guided-layout.json",
+                "inferred-paint.png",
+                "hidden-review.json",
+                "region.json",
+                "texture.png",
+            )
+        )
+    )
+    if (after_paint or published and not proven_no_paint) and not paint.is_file():
         raise StageError(
             "sf3d_pending", "元の推定画像の受付を確認できません。再送を停止しました。"
         )

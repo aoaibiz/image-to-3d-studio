@@ -65,20 +65,26 @@ class DecisionTests(unittest.TestCase):
             root = Path(tmp)
             receipt = root / "provider/receipt.json"
             for idx in range(2):
-                with self.assertRaisesRegex(ValueError, "local preflight"):
-                    with job._request(root, "paint", receipt):
-                        raise ValueError("local preflight")
+                with (
+                    self.assertRaisesRegex(ValueError, "local preflight"),
+                    job._request(root, "paint", receipt),
+                ):
+                    raise ValueError("local preflight")
             receipt.parent.mkdir()
-            with self.assertRaisesRegex(RuntimeError, "lost acknowledgement"):
-                with job._request(root, "paint", receipt):
-                    files.atomic_json(receipt, {"state": "submitted_or_ambiguous"})
-                    raise RuntimeError("lost acknowledgement")
+            with (
+                self.assertRaisesRegex(RuntimeError, "lost acknowledgement"),
+                job._request(root, "paint", receipt),
+            ):
+                files.atomic_json(receipt, {"state": "submitted_or_ambiguous"})
+                raise RuntimeError("lost acknowledgement")
             with job._request(root, "paint", receipt):
                 pass
             receipt.unlink()
-            with self.assertRaises(job.StageError):
-                with job._request(root, "paint", receipt):
-                    self.fail("reposted without receipt")
+            with (
+                self.assertRaises(job.StageError),
+                job._request(root, "paint", receipt),
+            ):
+                self.fail("reposted without receipt")
             (root / "finished-native.glb").write_bytes(b"orphan")
             with self.assertRaises(job.StageError):
                 job._guard_downstream(root, root / "work")
@@ -97,6 +103,35 @@ class DecisionTests(unittest.TestCase):
                     observed(),
                 )
             self.assertFalse(job.valid(root, {"input_sha256": "a" * 64}))
+
+    def test_lost_provider_receipt_with_only_downstream_evidence(self):
+        for name in (
+            "inspection.json",
+            "manifest.json",
+            "offline-preview.html",
+            "abcdef_front_material.png",
+            "sf3d-observed-work/appearance/photo-observer/receipt.json",
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                p = out / name
+                p.parent.mkdir(exist_ok=True, parents=True)
+                p.touch()
+                with self.assertRaises(job.StageError):
+                    job._guard_downstream(out, out / "sf3d-observed-work")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            work = out / "sf3d-observed-work"
+            for p in (
+                work / "identity.json",
+                work / "native/settings.json",
+                work / "appearance/photo-observer/receipt.json",
+                work / "orientation/hidden-review.json",
+            ):
+                p.parent.mkdir(parents=True, exist_ok=True)
+                files.atomic_json(p, {})
+            with self.assertRaises(job.StageError):
+                job._guard_downstream(out, work)
 
     def test_unpainted_mesh_measured_against_monochrome_photo_and_colour_mismatch(self):
         import numpy as np
@@ -196,6 +231,10 @@ class ArchivedIntegration(unittest.TestCase):
                 {"method": "archived original foreground"},
                 receipt,
                 base,
+            )
+            files.atomic_json(
+                work / "identity.json",
+                {"pipeline": job.PIPELINE, "input_sha256": source_sha},
             )
             setup = work / "setup.json"
             files.atomic_json(
