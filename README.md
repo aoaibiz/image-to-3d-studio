@@ -28,6 +28,23 @@
 
 ## 写真から背面の塗装を推定する（プレビュー）
 
+この機能は[開発中のPR #2](https://github.com/aoaibiz/image-to-3d-studio/pull/2)にあります。試すときは専用フォルダーに `git clone --branch improve/unseen-paint https://github.com/aoaibiz/image-to-3d-studio.git` で取得してください。公開リリース `v0.4.0-preview.1` の塗装例と、開発版で新しく生成した結果は、[検証記録](VERIFICATION.md)で比較できます。
+
+### 公式Stable Fast 3DとChatGPTを使う
+
+ローカルGPUを使わずに試す場合の初回設定です。Codex CLIに本人のChatGPTアカウントでログインしてから実行します。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -AllowOfficialSpace -ChatGPTPhotoAnalysis -SendPhotoAndGuidesToOpenAI
+.\.runtime\venv\Scripts\python.exe -m studio.server
+```
+
+写真を1枚貼って生成を押すと、切り抜いた対象をStability AIの公式Hugging Face Spaceに送り、テクスチャ付きの立体を1回生成します。OpenAIにはメタデータを除いた写真を送り、色・模様・部品を1回読み取ります。塗り足す場合だけ、写真と同じ立体から描いたガイドをOpenAIに送り、塗装案を最大1回作ります。元の材質を残す場合にも、撮影側との一致と反対側への模様の複製を検査します。初期診断では写真を送信しません。利用できる枠・待ち時間は各サービスに依存します。[送信内容とモデルの利用条件](engine/SF3D.md)
+
+同じジョブに、入力、生成元のGLB、仕上げたGLB、編集用glTF、工程の記録を保存します。見た目はビューアーで確認できます。生成モデルが推定した見えない面と、入力写真で確認できる面は区別して評価してください。
+
+### ローカルTripoSGとChatGPTを使う
+
 Windows で次の初期設定を1回行うと、写真を貼るだけで、Codex が色、繰り返し模様、正面にある部品と、反対面で役割が変わる可能性を読み取ります。本人の ChatGPT 利用枠で、写真の解析を1回、立体から作ったガイドを使った塗装の生成を1回依頼します。送信先は OpenAI、送信内容はメタデータを除いた元写真と立体の確認画像です。模様の指示は不要です。
 
 ```powershell
