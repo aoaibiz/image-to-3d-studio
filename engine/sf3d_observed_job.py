@@ -200,6 +200,13 @@ CONTINUITY_ARTIFACTS = NATIVE_ARTIFACTS | {
     "continuity-native.glb",
     "continuity-paint.json",
 }
+CHART_ARTIFACTS = NATIVE_ARTIFACTS | {
+    "chart-native.glb",
+    "chart-paint.json",
+    "chart-guide.png",
+    "chart-layout.json",
+    "inferred-paint.png",
+}
 
 
 def _appearance_mode(observations, submitted, *, full_supported=False):
@@ -256,7 +263,26 @@ def _existing_paint_attempt(work):
     fence = work / "paint-attempt.json"
     request = work / "appearance/guided-paint"
     if request.exists() or request.is_symlink():
-        if request.is_symlink() or not (request / "receipt.json").is_file():
+        if (
+            request.is_dir()
+            and not request.is_symlink()
+            and fence.is_file()
+            and files.read_json(fence) == {"stage": "paint", "state": "local_preflight"}
+            and all(
+                p.name == "run.lock" and p.is_file() and not p.is_symlink()
+                for p in request.iterdir()
+            )
+        ):
+            # The previous provider invocation proved no send; move its orphaned reservation
+            # aside so the provider can create the same job's first real reservation.
+            archive = Path(tempfile.mkdtemp(prefix="unsent-paint-", dir=work))
+            os.replace(request, archive / request.name)
+            return False
+        if (
+            request.is_symlink()
+            or (request / "receipt.json").is_symlink()
+            or not (request / "receipt.json").is_file()
+        ):
             raise StageError(
                 "sf3d_pending",
                 "元の推定塗装の受付を確認できません。再送を停止しました。",
@@ -271,6 +297,118 @@ def _local_paint_method(observations, mode, submitted):
     from engine.continuity_paint import eligible, paint_continuity
 
     return paint_continuity if eligible(observations) else None
+
+
+def _chart_policy(setup, work, key, fresh):
+    from studio.configure import agreement
+
+    current = files.read_json(setup) == {
+        "pipeline": PIPELINE,
+        "agreement": agreement(PIPELINE),
+    }
+    marker = work / "paint-guide-policy.json"
+    if fresh and not marker.exists():
+        files.atomic_json(marker, {**key, "source_chart": current})
+    if not marker.exists():
+        return False  # Pre-chart jobs retain their original two-view recipe.
+    record = files.read_json(marker)
+    if (
+        record != {**key, "source_chart": record.get("source_chart")}
+        or type(record.get("source_chart")) is not bool
+    ):
+        raise ValueError("初回の展開図設定を照合できません。")
+    return current and record["source_chart"]
+
+
+def _chart_route(account, submitted, allowed, observations):
+    journal = account / "guided-paint/receipt.json"
+    guide = account / "chart-guide/chart.json"
+    if journal.exists():
+        receipt = files.read_json(journal)
+        joined = receipt.get("directions") == ["joined_chart"]
+        if joined != (receipt.get("job_recipe") == "joined-intrinsic-strip-v1"):
+            raise ValueError("推定塗装の既存受付と展開方式が一致しません。")
+        if joined and (not guide.exists() or not allowed):
+            raise StageError(
+                "sf3d_pending",
+                "既存の展開図または送信許可を確認して同じジョブを再開してください。",
+            )
+        return joined
+    if guide.exists() and not allowed:
+        raise StageError(
+            "sf3d_pending",
+            "作成済み展開図の送信許可を確認して同じジョブを再開してください。",
+        )
+    if submitted or not allowed or (account / "guides").exists():
+        return False
+    if guide.exists():
+        return True
+    guess = observations.get("function_context", {}).get("interpretation", {})
+    return bool(observations["observed_face_cues"]) and not {
+        "distinct_working_surface",
+        "display_or_interface",
+    }.intersection(guess.get("reverse_candidates", []))
+
+
+def _chart_finish(args, setup, account, enter):
+    from engine.joined_chart_provider import generate_chart
+    from engine.joined_paint_chart import ChartUnavailable, apply_chart, prepare_chart
+    from engine.native_full_paint import NativeFullReviewHold
+
+    _, source, base, _, reg, observations, _, _ = args
+    work = base.parent
+    guide_dir = account / "chart-guide"
+    inputs = {
+        "native_model": base / "provider-native.glb",
+        "source_photo": source,
+        "foreground": base / "input-processed.png",
+        "registration": reg,
+        "observation": observations,
+    }
+    enter("guides")
+    if not guide_dir.exists():
+        try:
+            prepare_chart(**inputs, output_dir=guide_dir)
+        except ChartUnavailable:
+            return None  # No chart or request was created. The two-view method can still run.
+    enter("paint")
+    with _request(work, "paint", account / "guided-paint/receipt.json"):
+        proposal = generate_chart(
+            source,
+            guide_dir / "guide.png",
+            guide_dir / "chart.json",
+            account,
+            native_model=inputs["native_model"],
+            foreground=inputs["foreground"],
+            registration=reg,
+            observation=observations,
+            setup=setup,
+            pipeline=PIPELINE,
+        )
+    files.atomic_json(
+        work / "chart-recovered.json",
+        {
+            "source_sha256": files.digest(source),
+            "sheet_sha256": proposal["provenance"]["sheet_sha256"],
+            "thread_id": proposal["provenance"]["thread_id"],
+        },
+    )
+    enter("projection")
+    with tempfile.TemporaryDirectory(dir=work) as tmp:
+        fitted = Path(tmp) / "result"
+        try:
+            apply_chart(
+                **inputs,
+                guide_dir=guide_dir,
+                sheet_path=Path(proposal["sheet"]),
+                receipt=proposal["provenance"],
+                output_dir=fitted,
+            )
+        except (ChartUnavailable, NativeFullReviewHold) as exc:
+            raise NeedsReview(
+                "展開図の位置・保護面・背面塗装が検品条件を満たしませんでした。"
+            ) from exc
+        return _native_finish(*args, chart=(fitted, guide_dir, proposal))
 
 
 def _render_native(mesh, texture, basis, mask, lens=None):
@@ -425,12 +563,13 @@ def _native_inspection(base, reg, observations, report_dir, mode="native_materia
         if colour_hold
         else (
             "observed surface continuation; inspect inferred paint"
-            if mode == "local_continuity"
+            if mode in {"local_continuity", "guided_chart"}
             else "no additional pigment evidenced; inspect native material"
         ),
         "mode": mode,
         "source_sha256": observations["source_sha256"],
         "model_sha256": footprint["sha256"],
+        "texture_dimensions": list(tex.size),
         "inspection_sha256": files.digest(report_dir / "native-inspection.png"),
         "visual_quality": "needs_review",
         "hidden_surface_observed": False,
@@ -842,6 +981,7 @@ def _native_finish(
     shape_editor=None,
     *,
     continue_surface=None,
+    chart=None,
 ):
     from engine.finish_export import embed_master
     from engine.sf3d_provider import native_glb
@@ -850,11 +990,23 @@ def _native_finish(
     work = out / "sf3d-observed-work"
     mode = "local_continuity" if continue_surface else "native_material"
     required = CONTINUITY_ARTIFACTS if continue_surface else NATIVE_ARTIFACTS
+    if chart:
+        mode, required = "guided_chart", CHART_ARTIFACTS
     with tempfile.TemporaryDirectory(dir=work) as tmp:
         stage = Path(tmp)
         shutil.copyfile(base / "input-processed.png", stage / "input-processed.png")
         shutil.copyfile(base / "provider-native.glb", stage / "shape-master.glb")
-        if continue_surface:
+        if chart:
+            result_dir, guide_dir, proposal = chart
+            for src, name in [
+                (result_dir / "model.glb", "chart-native.glb"),
+                (result_dir / "chart-paint.json", "chart-paint.json"),
+                (guide_dir / "guide.png", "chart-guide.png"),
+                (guide_dir / "chart.json", "chart-layout.json"),
+                (Path(proposal["sheet"]), "inferred-paint.png"),
+            ]:
+                shutil.copyfile(src, stage / name)
+        elif continue_surface:
             result_dir = stage / "continuation"
             result_dir.mkdir()
             evidence = continue_surface(
@@ -873,7 +1025,11 @@ def _native_finish(
             os.replace(
                 result_dir / "continuity-paint.json", stage / "continuity-paint.json"
             )
-            oriented_glb(stage / "continuity-native.glb", stage / "model.glb")
+        if chart or continue_surface:
+            oriented_glb(
+                stage / ("chart-native.glb" if chart else "continuity-native.glb"),
+                stage / "model.glb",
+            )
             embed_master(stage / "model.glb", stage / "editable.gltf")
         else:
             for name in ("model.glb", "editable.gltf"):
@@ -892,24 +1048,47 @@ def _native_finish(
             "visual_quality": "needs_review",
             "external_shape_generations": 1,
             "external_photo_observations": 1,
-            "external_image_generations": 0,
+            "external_image_generations": int(chart is not None),
             "unseen_surface_observed": False,
             "display_glb_sha256": artifact["sha256"],
         }
+        if chart:
+            receipt = chart[2]["provenance"]
+            hist["paint"] = {
+                k: receipt[k]
+                for k in (
+                    "thread_id",
+                    "photo_sha256",
+                    "guide_sha256",
+                    "geometry_sha256",
+                    "sheet_sha256",
+                    "visual_brief_sha256",
+                    "chart_id",
+                    "job_recipe",
+                    "attempts",
+                    "recipient",
+                )
+            }
         files.atomic_json(stage / "generation.json", hist)
+        dimensions = files.read_json(stage / "native-material.json")[
+            "texture_dimensions"
+        ]
         meta = {
             **original,
             "pipeline": PIPELINE,
             "appearance_mode": mode,
             "engine": (
-                "Stable Fast 3D + observed local surface continuity"
+                "Stable Fast 3D + observed continuous surface chart"
+                if chart
+                else "Stable Fast 3D + observed local surface continuity"
                 if continue_surface
                 else "Stable Fast 3D + ChatGPT observed native material"
             ),
             "glb_sha256": artifact["sha256"],
             "geometry_master": "shape-master.glb",
             "visual_quality": "needs_review",
-            "texture_size": 1024,
+            "texture_size": max(dimensions),
+            "texture_dimensions": dimensions,
             "photo_observer": observation["method"],
             "artifact_sha256": {n: files.digest(stage / n) for n in sorted(required)},
         }
@@ -931,10 +1110,12 @@ def _validate_result(out, source_sha):
     meta = files.read_json(out / "settings.json")
     hashes = meta["artifact_sha256"]
     local = meta.get("appearance_mode") == "local_continuity"
-    native = meta.get("appearance_mode") == "native_material" or local
+    chart = meta.get("appearance_mode") == "guided_chart"
+    native = meta.get("appearance_mode") == "native_material" or local or chart
     modes = {
         "native_material": NATIVE_ARTIFACTS,
         "local_continuity": CONTINUITY_ARTIFACTS,
+        "guided_chart": CHART_ARTIFACTS,
         "guided_region": ARTIFACTS,
         "guided_full": FULL_ARTIFACTS,
     }
@@ -1000,37 +1181,42 @@ def _validate_result(out, source_sha):
         if (
             gen["source_sha256"] != source_sha
             or gen["display_glb_sha256"] != meta["glb_sha256"]
-            or gen["external_image_generations"] != 0
+            or gen["external_image_generations"] != int(chart)
             or review["source_sha256"] != source_sha
             or review["model_sha256"] != paint_sha
             or review["inspection_sha256"] != hashes["native-inspection.png"]
-            or not local
+            or not (local or chart)
             and gen["shape"]["output_sha256"] != paint_sha
             or gen["shape"]["native_sha256"] != hashes["shape-master.glb"]
             or gen["shape"]["camera"] != meta["camera"]
             or review["hold_projection"] is not False
         ):
             raise ValueError("元の形状・観察・無追加塗装の検品証跡が一致しません。")
-        if local:
-            evidence = files.read_json(out / "continuity-paint.json")
+        if local or chart:
+            from engine.sf3d_shape_job import oriented_digest
+
+            prefix = "chart" if chart else "continuity"
+            evidence = files.read_json(out / (prefix + "-paint.json"))
             if (
                 evidence["source_glb"] != hashes["shape-master.glb"]
-                or evidence["output_glb"] != hashes["continuity-native.glb"]
+                or evidence["output_glb"] != hashes[prefix + "-native.glb"]
                 or evidence["source_glb"] == evidence["output_glb"]
+                or oriented_digest(out / (prefix + "-native.glb")) != paint_sha
                 or evidence["source_image_sha256"] != source_sha
                 or evidence["foreground_sha256"] != hashes["input-processed.png"]
                 or evidence["visual_brief_sha256"] != json_sha(gen["visual_brief"])
                 or evidence["locked_changed"] != 0
                 or evidence["unsupported_surface_changed"] != 0
                 or evidence["changed_uv"] <= 0
-                or evidence["observed_texels"] <= 0
+                or local
+                and evidence["observed_texels"] <= 0
                 or evidence["source_rear_observed"] is not False
                 or evidence["appearance"] != "needs_review"
                 or evidence[
                     "normals_uv_nodes_material_and_all_other_buffers_bitwise_identical"
                 ]
                 is not True
-                or review["mode"] != "local_continuity"
+                or review["mode"] != meta["appearance_mode"]
                 or gen["photo_observation"].get("source_sha256") != source_sha
                 or gen["external_shape_generations"] != 1
                 or gen["external_photo_observations"] != 1
@@ -1039,6 +1225,28 @@ def _validate_result(out, source_sha):
                 raise ValueError(
                     "可視面の保護・観察・連続模様の推定結果を照合できません。"
                 )
+            if chart:
+                manifest = files.read_json(out / "chart-layout.json")
+                paint = gen["paint"]
+                if not (
+                    evidence["chart_id"] == paint["chart_id"] == manifest["chart_id"]
+                    and evidence["guide_sha"]
+                    == manifest["guide_sha"]
+                    == paint["guide_sha256"]
+                    == hashes["chart-guide.png"]
+                    and evidence["sheet_sha"]
+                    == paint["sheet_sha256"]
+                    == hashes["inferred-paint.png"]
+                    and evidence["generation_id"] == paint["thread_id"]
+                    and evidence["source_glb"]
+                    == paint["geometry_sha256"]
+                    == manifest["model_sha"]
+                    and paint["attempts"] == 1
+                    and paint["recipient"] == "OpenAI"
+                    and paint["photo_sha256"] == source_sha == manifest["photo_sha"]
+                    and paint["visual_brief_sha256"] == evidence["visual_brief_sha256"]
+                ):
+                    raise ValueError("展開図・推定塗装・生成受付を照合できません。")
         return meta
     record_name = (
         "full-paint.json" if meta["appearance_mode"] == "guided_full" else "region.json"
@@ -1320,6 +1528,8 @@ def _guard_downstream(out, work):
         published
         or observation.exists()
         or paint.exists()
+        or (account / "chart-guide").exists()
+        or (work / "chart-recovered.json").exists()
         or any(
             (work / n).exists()
             for n in (
@@ -1352,7 +1562,7 @@ def _guard_downstream(out, work):
         published
         or any(
             (account / n).exists()
-            for n in ("guides", "observation-seal.json", "guided-paint")
+            for n in ("guides", "chart-guide", "observation-seal.json", "guided-paint")
         )
         or any(
             (work / n).exists()
@@ -1361,6 +1571,7 @@ def _guard_downstream(out, work):
                 "orientation",
                 "registration.json",
                 "native-material.json",
+                "chart-recovered.json",
             )
         )
         or state.get("stage")
@@ -1390,6 +1601,7 @@ def _guard_downstream(out, work):
     )
     after_paint = (
         (work / "orientation").exists()
+        or (work / "chart-recovered.json").exists()
         or hold.get("stage") in {"orientation", "projection"}
         or (
             state.get("stage") in {"orientation", "projection"}
@@ -1407,6 +1619,8 @@ def _guard_downstream(out, work):
                 "region.json",
                 "full-paint.json",
                 "texture.png",
+                "chart-paint.json",
+                "chart-native.glb",
             )
         )
     )
@@ -1443,6 +1657,9 @@ def run(
         if (out / "settings.json").is_file():
             return _validate_result(out, key["input_sha256"])
         _guard_downstream(out, work)
+        fresh = not identity.exists() or (
+            not base.exists() and not (work / "shape-attempt.json").exists()
+        )
         files.atomic_json(identity, key)
         stage = "consent"
 
@@ -1461,6 +1678,7 @@ def run(
 
         try:
             _consent(setup)
+            chart_allowed = _chart_policy(setup, work, key, fresh)
             enter("native")
             with _request(
                 work,
@@ -1493,23 +1711,23 @@ def run(
             submitted = _existing_paint_attempt(work)
             stage = "observation"
             mode = _appearance_mode(observations, submitted, full_supported=True)
-            local_apply = _local_paint_method(observations, mode, submitted)
+            previous_chart = (account / "chart-guide").exists()
+            local_apply = _local_paint_method(
+                observations, mode, submitted or previous_chart
+            )
             meta = None
-            if mode == "native_material" or local_apply is not None:
+            args = out, source, base, orig, reg, observations, observation, shape_editor
+            if (
+                mode == "native_material" and not previous_chart
+            ) or local_apply is not None:
                 enter("native_inspection")
-                args = (
-                    out,
-                    source,
-                    base,
-                    orig,
-                    reg,
-                    observations,
-                    observation,
-                    shape_editor,
-                )
                 meta = _native_finish(*args, continue_surface=local_apply)
                 if meta is None and mode == "native_material":
                     meta = _native_finish(*args)
+            if meta is None and _chart_route(
+                account, submitted, chart_allowed, observations
+            ):
+                meta = _chart_finish(args, setup, account, enter)
             if meta is not None:
                 files.atomic_json(
                     state,

@@ -26,6 +26,58 @@ def observed(*, cues=None, structures=None, reverse="continuous_substrate"):
 
 
 class DecisionTests(unittest.TestCase):
+    def test_chart_consent_is_frozen_per_job_and_paint_receipt_owns_one_recipe(self):
+        from engine.guided_provider import TurnaroundProviderError
+        from engine.joined_chart_provider import chart_consent
+        from studio.configure import agreement, legacy_sf3d_observed_agreement
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            setup = root / "engine.json"
+            old, new = root / "old", root / "new"
+            old.mkdir()
+            new.mkdir()
+            key = {"pipeline": job.PIPELINE, "input_sha256": "3" * 64}
+            obs = observed(cues={"repeated": {"family": "geometric"}})
+            files.atomic_json(
+                setup,
+                {
+                    "pipeline": job.PIPELINE,
+                    "agreement": legacy_sf3d_observed_agreement(),
+                },
+            )
+            job._consent(setup)
+            self.assertFalse(job._chart_policy(setup, old, key, True))
+            with self.assertRaises(TurnaroundProviderError):
+                chart_consent(setup)
+            files.atomic_json(
+                setup, {"pipeline": job.PIPELINE, "agreement": agreement(job.PIPELINE)}
+            )
+            chart_consent(setup)
+            self.assertFalse(job._chart_policy(setup, old, key, False))
+            self.assertTrue(job._chart_policy(setup, new, key, True))
+            self.assertTrue(job._chart_route(new, False, True, obs))
+            (new / "guided-paint").mkdir()
+            path = new / "guided-paint/receipt.json"
+            files.atomic_json(
+                path, {"state": "submitted", "directions": ["rear", "opposite"]}
+            )
+            self.assertFalse(job._chart_route(new, True, True, obs))
+            files.atomic_json(
+                path,
+                {
+                    "directions": ["joined_chart"],
+                    "job_recipe": "joined-intrinsic-strip-v1",
+                },
+            )
+            with self.assertRaises(job.StageError):
+                job._chart_route(new, True, True, obs)
+            (new / "chart-guide").mkdir()
+            files.atomic_json(new / "chart-guide/chart.json", {})
+            self.assertTrue(job._chart_route(new, True, True, obs))
+            with self.assertRaises(job.StageError):
+                job._chart_route(new, True, False, obs)
+
     def test_local_finish_never_replaces_an_existing_or_lost_paint_receipt(self):
         source = observed(cues={"repeated": {"family": "geometric"}})
         with tempfile.TemporaryDirectory() as tmp:
@@ -41,6 +93,17 @@ class DecisionTests(unittest.TestCase):
             with self.assertRaises(job.StageError) as pending:
                 job._existing_paint_attempt(work)
             self.assertEqual(pending.exception.code, "sf3d_pending")
+            files.atomic_json(
+                work / "paint-attempt.json",
+                {"stage": "paint", "state": "local_preflight"},
+            )
+            (work / "appearance/guided-paint/run.lock").touch()
+            self.assertFalse(job._existing_paint_attempt(work))
+            self.assertFalse((work / "appearance/guided-paint").exists())
+            (work / "appearance/guided-paint").mkdir()
+            (work / "appearance/guided-paint/unexpected").touch()
+            with self.assertRaises(job.StageError):
+                job._existing_paint_attempt(work)
             files.atomic_json(
                 work / "appearance/guided-paint/receipt.json", {"state": "submitted"}
             )
@@ -614,15 +677,13 @@ class OptionalShapeTests(unittest.TestCase):
                 self.assertFalse((stage / "shape-hypothesis.json").exists())
 
 
-@unittest.skipUnless(
-    os.getenv("STUDIO_CONTINUITY_FIXTURE"),
-    "Requires the separately generated analytical surface fixture.",
-)
 class AnalyticSurfaceIntegration(unittest.TestCase):
     def test_generated_surface_observation_uses_no_paint_request(self):
         from engine import sf3d_provider, sf3d_shape_job
+        from quality.test_continuity_paint import pbr_fixture
 
-        fixture = Path(os.environ["STUDIO_CONTINUITY_FIXTURE"])
+        fixture = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        pbr_fixture(fixture)
         source = fixture / "photo.png"
         matte = fixture / "foreground.png"
         native = fixture / "provider-native.glb"
@@ -672,8 +733,9 @@ class AnalyticSurfaceIntegration(unittest.TestCase):
             )
             self.assertEqual(
                 files.digest(out / "continuity-native.glb"),
-                files.digest(fixture / "finished/model.glb"),
+                files.read_json(out / "continuity-paint.json")["output_glb"],
             )
+            self.assertEqual(settings["texture_dimensions"], [512, 512])
             self.assertEqual(
                 files.read_json(out / "generation.json")["external_image_generations"],
                 0,

@@ -1,7 +1,6 @@
 """A local photo-painted shape followed by one explicitly authorized paint proposal."""
 
 import argparse
-import json
 import os
 import shutil
 import tempfile
