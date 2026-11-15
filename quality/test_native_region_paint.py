@@ -97,13 +97,13 @@ class NativePaintTests(unittest.TestCase):
         expected = mask & ((x - 156) ** 2 + (y - 190) ** 2 > 28**2)
         shifted = mask & ((x - 230) ** 2 + (y - 205) ** 2 > 28**2)
         rgb = np.where(shifted[:, :, None], [112, 63, 29], 255).astype("uint8")
-        with self.assertRaisesRegex(ValueError, "opening"):
+        with self.assertRaisesRegex(paint.NativeRegionQualityHold, "opening"):
             paint.align(rgb, expected)
         frame = np.zeros_like(mask)
         frame[60:320, 90:99] = True
         frame[60:320, 270:279] = True
         frame[60:69, 90:279] = True
-        with self.assertRaisesRegex(ValueError, "thick|dominant"):
+        with self.assertRaisesRegex(paint.NativeRegionQualityHold, "thick|dominant"):
             paint.body(frame)
 
     def test_two_valid_solid_surfaces_keep_uncertain_edges_unpainted(self):
@@ -135,10 +135,11 @@ class NativePaintTests(unittest.TestCase):
             paint._admit_observation(
                 layout, receipt, {**review, "hold_projection": True}, sha
             )
-        with self.assertRaisesRegex(ValueError, "identit"):
+        with self.assertRaisesRegex(ValueError, "identit") as mismatch:
             paint._admit_observation(
                 layout, {"visual_brief_sha256": "0" * 64}, review, sha
             )
+        self.assertIs(type(mismatch.exception), ValueError)
         prior = deepcopy(brief)
         prior["method"] = obs.METHOD
         del prior["function_context"]
@@ -155,6 +156,8 @@ class NativePaintTests(unittest.TestCase):
         b = a.copy()
         b[:, :, 1] = 70
         q = np.zeros((280, 280), np.float32)
+        with self.assertRaisesRegex(paint.NativeRegionQualityHold, "core/boundary"):
+            paint.cut(a, b, q)
         q[40:240, 40:240] = 1
         seam = paint.cut(a, b, q)
         self.assertEqual(float(seam[140, 140]), 1.0)

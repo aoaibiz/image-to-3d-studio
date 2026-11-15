@@ -24,10 +24,14 @@ from engine.shape_appearance import _display_matrix
 from engine.finish_export import embed_master, export_finished
 
 
+class NativeRegionQualityHold(ValueError):
+    """The material proposal lacks a supported regional patch on this valid model."""
+
+
 def box(mask):
     y, x = np.nonzero(mask)
     if not len(x):
-        raise ValueError("empty support")
+        raise NativeRegionQualityHold("empty support")
     lo = np.array([x.min(), y.min()])
     hi = np.array([x.max(), y.max()])
     return (lo + hi) / 2, hi - lo
@@ -40,13 +44,13 @@ def body(mask):
     d = ndi.distance_transform_edt(mask)
     ids, n = ndi.label(d > radius)
     if not n:
-        raise ValueError("no thick self-supporting surface")
+        raise NativeRegionQualityHold("no thick self-supporting surface")
     npx = np.bincount(ids.ravel())
     npx[0] = 0
     core = ids == np.argmax(npx)
     out = (ndi.distance_transform_edt(~core) <= radius) & mask
     if out.sum() < 0.64 * mask.sum():
-        raise ValueError("no single dominant solid surface")
+        raise NativeRegionQualityHold("no single dominant solid surface")
     # The convex envelope of the largest supported area may have concave borders but may
     # not hide a structural opening in its interior. Never fill a hole to manufacture support.
     hull = np.zeros_like(out, dtype=np.uint8)
@@ -58,7 +62,9 @@ def body(mask):
     if np.count_nonzero(holes & ndi.binary_erosion(hull, iterations=5)) >= max(
         12, round(0.0001 * mask.sum())
     ):
-        raise ValueError("an interior opening crosses the dominant surface")
+        raise NativeRegionQualityHold(
+            "an interior opening crosses the dominant surface"
+        )
     return out, holes
 
 
@@ -79,7 +85,7 @@ def align(panel, obj):
     c1, s1 = box(b)
     scale = float(np.dot(s0, s1) / np.dot(s0, s0))
     if not 0.8 <= scale <= 1.2:
-        raise ValueError("unsupported body scale")
+        raise NativeRegionQualityHold("unsupported body scale")
     delta = c1 - scale * c0
     matrix = np.column_stack((np.eye(2) * scale, delta))
 
@@ -91,7 +97,7 @@ def align(panel, obj):
     aligned = warp(a.astype("uint8"), cv2.INTER_NEAREST) > 0
     score = (aligned & b).sum() / (aligned | b).sum()
     if score < 0.94:
-        raise ValueError(f"body agreement {score:.4f} < .94")
+        raise NativeRegionQualityHold(f"body agreement {score:.4f} < .94")
     h = warp(ha.astype("uint8"), cv2.INTER_NEAREST).astype(bool) | hb
     inner = aligned & b & obj
     distance = ndi.distance_transform_edt(inner)
@@ -155,7 +161,7 @@ def cut(rgb0, rgb1, weight):
     good = quality >= 0.94
     bad = quality <= 0.04
     if good.sum() < 20 or not bad.any():
-        raise ValueError("no stable patch core/boundary")
+        raise NativeRegionQualityHold("no stable patch core/boundary")
     add(np.full(idx.size, start), idx, np.where(good, 1000000, 8 * quality**2))
     add(idx, np.full(idx.size, stop), np.where(bad, 1000000, 8 * (1 - quality) ** 2))
     a, b0 = (np.concatenate([e[k] for e in edges]) for k in range(2))
@@ -235,7 +241,7 @@ def _paint(
     extent = np.ptp(mesh.vertices, axis=0)
     depth_ratio = float(extent[2] / min(extent[:2]))
     if depth_ratio > 0.65:
-        raise ValueError("The body is not a shallow broad face.")
+        raise NativeRegionQualityHold("The body is not a shallow broad face.")
     views = []
     stats = {}
     for i, (name, angle) in enumerate(gt.ANGLES.items()):
@@ -248,14 +254,14 @@ def _paint(
         )
         try:
             _, support, report = align(rgb, obj)
-        except ValueError as e:
+        except NativeRegionQualityHold as e:
             stats[name] = {"hold": str(e)}
             continue
         stats[name] = report
         solid, _ = body(foreground(rgb))
         views.append((name, view, support, rgb, solid))
     if not views:
-        raise ValueError("no supported region")
+        raise NativeRegionQualityHold("no supported region")
     # Use one ornament field from the least foreshortened valid view. Both cameras
     # can support the geometry without imposing two conflicting ornament layouts.
     chosen = max(views, key=lambda row: float(-row[1][0][2, 2]))
@@ -326,7 +332,9 @@ def _paint(
     blend[lock[y, x]] = 0.0
     support = blend > 0
     if np.count_nonzero(support) < max(32, round(0.03 * len(blend))):
-        raise ValueError("Insufficient supported hidden surface for a coherent patch")
+        raise NativeRegionQualityHold(
+            "Insufficient supported hidden surface for a coherent patch"
+        )
     updated = native.copy()
     base = native[y, x].astype(float)
     updated[y, x] = (
@@ -334,7 +342,7 @@ def _paint(
     )
     delta = updated.astype("int16") - native.astype("int16")
     if not np.any(delta[y, x]):
-        raise ValueError("No material change on the inferred surface")
+        raise NativeRegionQualityHold("No material change on the inferred surface")
     nearest = ndi.distance_transform_edt(
         ids < 0, return_distances=False, return_indices=True
     )
