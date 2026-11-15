@@ -557,8 +557,7 @@ def _synthesize(*args):
         paint_native_full,
         preflight_native_paint,
     )
-
-    from engine.native_region_paint import paint_native_region
+    from engine.native_region_paint import NativeRegionQualityHold, paint_native_region
 
     try:
         paint_native_full(*args)
@@ -584,8 +583,10 @@ def _synthesize(*args):
         or not preflight_native_paint(native, registration)["region_depth_eligible"]
     ):
         raise NeedsReview("2方向の全体形状が合わず、部分投影の根拠も不足しています。")
-    # Validation/identity errors from the native kernel remain real failures.
-    paint_native_region(*args)
+    try:
+        paint_native_region(*args)
+    except NativeRegionQualityHold as exc:
+        raise NeedsReview(str(exc)) from exc
     return "guided_region", "region.json", full_reason
 
 

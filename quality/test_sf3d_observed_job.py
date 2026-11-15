@@ -119,6 +119,41 @@ class DecisionTests(unittest.TestCase):
                 job._synthesize(*args)
             regional.assert_not_called()
 
+    def test_only_typed_regional_fit_error_keeps_native_for_review(self):
+        from engine import native_full_paint as full
+        from engine import native_region_paint as region
+
+        args = [None] * 11
+        args[7] = {"visual_brief": observed(cues={"repeated": {"family": "geometric"}})}
+        with (
+            patch.object(
+                full,
+                "paint_native_full",
+                side_effect=full.NativeFullRegistrationError("outline"),
+            ),
+            patch.object(
+                full,
+                "preflight_native_paint",
+                return_value={"region_depth_eligible": True},
+            ),
+        ):
+            with (
+                patch.object(
+                    region,
+                    "paint_native_region",
+                    side_effect=region.NativeRegionQualityHold("no supported region"),
+                ),
+                self.assertRaises(job.NeedsReview),
+            ):
+                job._synthesize(*args)
+            error = ValueError("invalid source receipt")
+            with (
+                patch.object(region, "paint_native_region", side_effect=error),
+                self.assertRaises(ValueError) as failure,
+            ):
+                job._synthesize(*args)
+            self.assertIs(failure.exception, error)
+
     def test_uncertain_receipt_or_wrong_paint_does_not_auto_finish(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -314,7 +349,41 @@ class ArchivedIntegration(unittest.TestCase):
                         ),
                     )
                 )
+            # Exercise the no-support path against this real source and native GLB,
+            # replacing only the local fitted region mask; archived provider bytes stay intact.
+            import numpy as np
+
+            from engine import native_region_paint
+
+            align = native_region_paint.align
+
+            def no_solid_region(proposal, projected):
+                return align(proposal, np.zeros_like(projected))
+
+            with (
+                patch.object(native_region_paint, "align", side_effect=no_solid_region),
+                self.assertRaises(job.StageError) as held,
+            ):
+                job.run(src, out, setup=setup)
+            self.assertEqual(held.exception.code, "sf3d_observed_review")
+            self.assertIn("no supported region", str(held.exception))
+            self.assertFalse((out / "settings.json").exists())
+            preview = files.read_json(out / "review-hold.json")
+            self.assertEqual(preview["reason_code"], "native_projection")
+            self.assertEqual(preview["reason"], job.HOLD_REASONS["native_projection"])
+            self.assertEqual(preview["input_sha256"], source_sha)
+            self.assertEqual(preview["shape_sha256"], native_sha)
+            self.assertEqual(
+                preview["preview_sha256"], files.digest(out / "review-native.glb")
+            )
+            self.assertEqual(
+                preview["preview_sha256"], files.digest(base / "model.glb")
+            )
+            self.assertEqual(
+                files.read_json(work / "state.json")["status"], "needs_review"
+            )
             result = job.run(src, out, setup=setup)
+            self.assertFalse((out / "review-hold.json").exists())
             self.assertTrue(job.valid(out, result))
             self.assertEqual(result["appearance_mode"], "guided_region")
             self.assertEqual(result["artifact_sha256"]["shape-master.glb"], native_sha)
