@@ -242,11 +242,16 @@ def review_hidden_paint(
     """Check a proposed sheet before projection. A true hold_projection must block automatic use."""
     model = Path(model)
     source_sha = hashlib.sha256(gt._single(source_photo, 32 * gt.MIB)).hexdigest()
-    brief = (
-        None
-        if visual_brief is None
-        else validate_provider_observations(visual_brief, source_sha)
-    )
+    validate = validate_provider_observations
+    if (
+        isinstance(visual_brief, dict)
+        and visual_brief.get("method") == "codex-photo-observations-v1"
+    ):
+        from engine.codex_photo_observations import (
+            validate_provider_observations as validate,
+        )
+
+    brief = None if visual_brief is None else validate(visual_brief, source_sha)
     matte = gt._single(foreground, 32 * gt.MIB)
     generated = gt._single(inferred_sheet, 32 * gt.MIB)
     inputs = {
