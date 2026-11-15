@@ -25,8 +25,9 @@ class PixalProviderTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         self.work = root / "work"
-        self.photo = root / "private_filename.jpg"
-        original = Image.new("RGB", (80, 40), "#982020")
+        self.photo = root / "private_filename.png"
+        original = Image.new("RGBA", (80, 40), (199, 10, 67, 0))
+        original.paste((152,32,32,255), (25,5,65,35))
         exif = Image.Exif()
         exif[270] = "sensitive unpublished metadata"
         original.save(self.photo, exif=exif)
@@ -69,6 +70,33 @@ class PixalProviderTests(unittest.TestCase):
             shutil.copyfile(self.work/"input.png",dest)
         else:
             self.fail("foreign URL")
+
+    def test_normalized_foreground_keeps_alpha_locally_and_cannot_leak_transparent_rgb(self):
+        from engine.pixal_input import prepare
+        cleaned = provider._source_png(self.photo.read_bytes())
+        with Image.open(io.BytesIO(cleaned)) as img:
+            self.assertEqual(img.mode, "RGBA")
+            self.assertFalse(img.getexif())
+        folder = self.work.parent / "prepare-control"
+        frame, info = prepare(cleaned, folder)
+        self.assertEqual(info["alpha_method"], "source alpha")
+        self.assertEqual(provider.digest(folder / "foreground.png"), info["foreground_sha256"])
+        self.assertEqual(provider.digest(folder / "normalized.png"), info["normalized_sha256"])
+        with Image.open(io.BytesIO(frame)) as img:
+            self.assertEqual(img.mode, "RGB")
+            self.assertEqual(img.width, img.height)
+            self.assertEqual(img.getpixel((0,0)), (0,0,0))
+            self.assertEqual(img.getpixel((img.width//2,img.height//2)), (152,32,32))
+            self.assertFalse(img.getexif())
+        self.assertEqual(prepare(cleaned, folder), (frame, info))
+
+    def test_saved_pre_foreground_job_uses_unchanged_asset_without_repreparing(self):
+        receipt = provider.generate(self.photo, self.work, allow_public_cc0=True)
+        receipt.pop("preprocessing")
+        (self.work / "provider.json").write_text(json.dumps(receipt))
+        with patch("engine.pixal_input.prepare", side_effect=AssertionError("no reprocessing")):
+            self.assertEqual(provider.generate(self.photo,self.work),receipt)
+        self.assertEqual(len(self.calls),2)
 
     def test_consent_and_exact_pbr_resume(self):
         with self.assertRaises(PermissionError):

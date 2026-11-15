@@ -39,6 +39,13 @@ def valid(out, settings, *, receipt_path=None):
         original_receipt = receipt_path or out / "pixal-work" / "provider" / "provider.json"
         if original_receipt.is_symlink() or receipt != files.read_json(original_receipt):
             return False
+        preparation = receipt.get("preprocessing")
+        if preparation is not None:
+            directory = original_receipt.parent / "preparation"
+            if (preparation["method"] != "pixal-local-foreground-v1"
+                    or files.digest(directory / "normalized.png") != preparation["normalized_sha256"]
+                    or files.digest(directory / "foreground.png") != preparation["foreground_sha256"]):
+                return False
         return (history["agreement"] == PIXAL_AGREEMENT
                 and matches_completed(receipt)
                 and receipt["quality"] == settings["visual_quality"] == "needs_review"
@@ -115,6 +122,8 @@ def run(source, out, *, setup, public_cc0_sha256):
             if name in {"upload_unknown", "submission_unknown"}:
                 consent(setup, key, public_cc0_sha256)
                 files.atomic_json(ticket, identity)
+            if name == "preparing_foreground":
+                print("segmenting source", flush=True)
             markers = {"uploaded": "uploaded", "accepted": "generation_waiting",
                        "downloading": "downloading", "completed": "complete"}
             if name in markers:

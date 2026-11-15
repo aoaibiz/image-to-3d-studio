@@ -266,13 +266,19 @@ def generate(source, work, *, allow_public_cc0=False, expected_source_sha256=Non
                     raise ValueError("The saved Pixal3D GLB is missing or has changed.")
                 return state
         else:
-            if any(f.name != "run.lock" for f in work.iterdir()):
+            if any(f.name not in {"run.lock", "preparation"} for f in work.iterdir()):
                 raise Pending("The original Pixal3D receipt is missing. Do not resubmit.")
             if allow_public_cc0 is not True:
                 raise PermissionError("Only a verified public CC0 image may be sent to this community Space.")
+            from engine.pixal_input import prepare
+
+            if progress:
+                progress("preparing_foreground")
+            upload_bytes, preparation = prepare(_source_png(raw), work / "preparation")
             attestation = preflight()
-            png.write_bytes(_source_png(raw))
-            state = dict(attestation, source_sha256=photo, upload_sha256=digest(png), started_at=time.time(),
+            png.write_bytes(upload_bytes)
+            state = dict(attestation, preprocessing=preparation, source_sha256=photo,
+                         upload_sha256=digest(png), started_at=time.time(),
                          seed=SEED, resolution=1024, quality_setting="balanced", quality="needs_review")
             save("prepared")
         if state["state"] == "failed":

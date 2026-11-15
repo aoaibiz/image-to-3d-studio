@@ -207,8 +207,6 @@ class Handler(BaseHTTPRequestHandler):
                     "python": ".runtime/venv/Scripts/python.exe", "foreground_model": ".runtime/u2net/u2net.onnx",
                     "validator": ".runtime/validator/gltf_validator.exe", "viewer": "viewer/node_modules/three/build/three.module.js",
                 }.items()}
-                if self.server.core.pipeline == PIXAL_PIPELINE:
-                    checks.pop("foreground_model")
                 checks["node"] = bool(shutil.which("node"))
                 result = {**space_engine_info(self.server.core.pipeline), "ok": all(checks.values()), "checks": checks,
                           "diagnostics": {"remote_availability": "未確認。実行時に公式Spaceの混雑・匿名利用枠を確認します。"}}

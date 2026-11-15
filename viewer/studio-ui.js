@@ -104,7 +104,7 @@ async function readEngine() {
     pipeline = engine.pipeline;
     generate.textContent = pixal ? 'このCC0公開写真で3Dを生成' : '3D を生成';
     if (pixal) {
-      info.textContent = 'Pixal3Dの公開デモ専用です。ボタンを押すと、選んだCC0公開写真をHugging Faceの個人Space victor/pixal3d-studioへ送り、匿名枠で1回生成します。共有オフでも写真と出力はURLから取得できます。保存期間は未確認です。';
+      info.textContent = 'Pixal3Dの公開デモ専用です。ボタンを押すと、選んだCC0公開写真を端末で切り抜き、Hugging Faceの個人Space victor/pixal3d-studioへ送り、匿名枠で1回生成します。共有オフでも写真と出力はURLから取得できます。保存期間は未確認です。';
     } else if (observedSF3D) {
       info.textContent = '評価用のStable Fast 3Dを使用します。切り抜いた写真をHugging Face上のStability AI公式Spaceに送り、匿名枠で立体を1回生成します。OpenAIにはメタデータを除いた元写真を送り、本人のChatGPT利用枠で外観を1回解析します。塗装が必要な場合は写真と立体の確認画像を送り、画像を1回生成します。';
     } else if (sf3d) {

@@ -94,6 +94,12 @@ class PixalRouteTests(unittest.TestCase):
         receipt.update(origin=pixal_provider.ORIGIN, resolution=1024, quality_setting="balanced",
                        asset_id="b" * 12, event_id="a" * 32, seed=pixal_provider.SEED, mock=False,
                        share_to_community=False, download_url=pixal_provider.ORIGIN + "/community-assets/" + "b"*12 + "/model.glb")
+        prep = work / "preparation"
+        prep.mkdir()
+        for img in ("normalized.png", "foreground.png"):
+            (prep / img).write_bytes(png())
+        receipt["preprocessing"] = {"method": "pixal-local-foreground-v1",
+                                    "normalized_sha256": self.sha, "foreground_sha256": self.sha}
         record = work / "provider.json"
         record.write_text(json.dumps(receipt))
         result = job.finalize(work, self.out, self.sha, receipt)
@@ -106,6 +112,9 @@ class PixalRouteTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 job.finalize(work, self.out, self.sha, changed)
         record.write_text(json.dumps(receipt))
+        (prep / "foreground.png").write_bytes(b"damaged")
+        self.assertFalse(job.valid(self.out, result))
+        (prep / "foreground.png").write_bytes(png())
         master = json.loads((self.out / "editable.gltf").read_bytes())
         self.assertEqual(master["materials"], doc["materials"])
         self.assertEqual(base64.b64decode(master["buffers"][0]["uri"].split(",")[1]), binary[8:])
