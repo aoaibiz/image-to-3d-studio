@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ja"><head><link rel="icon" href="data:,"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="robots" content="noindex,nofollow"><title>三毛猫の3Dプレビュー</title><style>body{font:17px system-ui;background:#eef1ed;color:#26322c;display:grid;place-items:center;min-height:85vh;margin:16px}</style></head><body><p id="status" role="status">三毛猫を読み込み中…</p><script>
+(async()=>{
+ const status=document.getElementById('status');
+ const k=location.hash.slice(1);
+ if(!/^[A-Za-z0-9_-]{43}$/.test(k)){status.textContent='チャットに届いたリンク全体を開いてください。';return}
+ try {
+ const bytes=Uint8Array.from(atob(k.replace(/-/g,'+').replace(/_/g,'/')+'='),c=>c.charCodeAt(0));
+ const key=await crypto.subtle.importKey('raw',bytes,'AES-GCM',false,['decrypt']);
+ const response=await fetch('./preview.bin',{credentials:'omit',referrerPolicy:'no-referrer'});
+ if(!response.ok)throw Error();
+ const file=new Uint8Array(await response.arrayBuffer());
+ const page=await crypto.subtle.decrypt({name:'AES-GCM',iv:file.subarray(0,12)},key,file.subarray(12));
+ document.open();document.write(new TextDecoder().decode(page).replace(/<head>/i,"<head><link rel=icon href=data:,>"));document.close();
+ } catch {status.textContent='読み込みに失敗しました。チャットのリンクをSafariで開き直してください。'}
+})();
+</script></body></html>
