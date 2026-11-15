@@ -263,3 +263,95 @@ class NativeFullTests(unittest.TestCase):
             result = paint._copy_check(reopened, pixels)
             self.assertEqual(result["status"], "review_hold")
             self.assertGreater(result["reflected"], 0.95)
+
+    def test_symmetric_focal_face_is_distinct_from_plain_symmetric_material(self):
+        from PIL import ImageDraw
+
+        mesh = trimesh.creation.box(extents=(1, 1, 0.4))
+        mesh.visual = trimesh.visual.TextureVisuals(uv=mesh.vertices[:, :2] + 0.5)
+        tex = Image.new("RGB", (256, 256), "tan")
+        d = ImageDraw.Draw(tex)
+        for x in (83, 172):
+            d.ellipse((x - 12, 85, x + 12, 112), fill="#202020")
+            d.ellipse((x - 9, 88, x - 4, 94), fill="white")
+        d.polygon([(115, 130), (140, 130), (127, 142)], fill="#202020")
+        d.arc((98, 126, 128, 153), 0, 125, fill="black", width=3)
+        d.arc((126, 126, 156, 153), 55, 180, fill="black", width=3)
+        for y in (130, 140, 150):
+            d.line((30, y - 8, 82, y + 1), fill="black", width=3)
+            d.line((225, y - 8, 173, y + 1), fill="black", width=3)
+        focal = {
+            "observed_face_cues": {
+                "focal": {"family": "character", "location": "center"}
+            }
+        }
+        self.assertEqual(
+            paint._copy_check(mesh, np.asarray(tex), focal)["status"], "review_hold"
+        )
+        flat = np.full((256, 256, 3), 135, np.uint8)
+        self.assertEqual(paint._copy_check(mesh, flat, {})["status"], "inconclusive")
+
+    def test_supported_paint_replaces_prior_ink_instead_of_multiplying_it(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as temp:
+            args = fixture(Path(temp))
+            _, _, _, mesh = native._native(args[0])
+            y, x = np.indices((256, 256))
+            base = np.where(
+                (((x // 6 + y // 4) % 2) == 0)[:, :, None], [154, 37, 56], [39, 76, 154]
+            ).astype(np.uint8)
+            mesh.visual.material.baseColorTexture = Image.fromarray(base)
+            mask = gt._matte(args[3], gt.SIZE)[:, :, 3] >= 150
+
+            def single_view(_mesh, _sheet, points, _normals):
+                field = np.tile([95, 140, 195], (len(points), 1))
+                return (
+                    [field, 255 - field],
+                    [np.ones(len(field)), np.zeros(len(field))],
+                    {},
+                )
+
+            with patch.object(paint, "_field", side_effect=single_view):
+                result, record = paint._project(
+                    mesh, base, mask, args[4]["camera_frame"], None
+                )
+            _, _, _, _, yy, xx = native.atlas(mesh)
+            changes = (result[yy, xx] != base[yy, xx]).any(axis=1)
+            self.assertGreater(changes.sum(), 500)
+            self.assertTrue((result[yy[changes], xx[changes]] == [95, 140, 195]).all())
+            self.assertEqual(record["locked_changed"], 0)
+            self.assertEqual(record["unsupported_surface_changed"], 0)
+
+    def test_roll_and_uniform_scale_require_independent_interior_landmarks(self):
+        import cv2
+
+        n = gt.SIZE
+        y, x = np.indices((n, n))
+        v = (y - 0.15 * n) / (0.7 * n)
+        width = n * (0.13 + 0.065 * np.sin(1.45 * np.pi * v) ** 2 + 0.032 * v)
+        mask = (abs(x - 0.5 * n) < width) & (v > 0) & (v < 1)
+        depth = (
+            0.8
+            + 0.11 * np.tanh((v - 0.28) / 0.008)
+            - 0.22 * np.tanh((v - 0.67) / 0.008)
+        )
+        z = np.where(mask, depth, -np.inf)
+        rgb = np.full((n, n, 3), 254, np.uint8)
+        ink = np.where((v > 0.28) & (v < 0.67), 125, 80)
+        for c, offset in enumerate([24, 40, 72]):
+            rgb[:, :, c][mask] = ink[mask] + offset
+        M = cv2.getRotationMatrix2D((n / 2, n / 2), 3.1, 1.15)
+
+        def camera(image):
+            warped = cv2.warpAffine(image, M, (n, n), borderValue=(254, 254, 254))
+            return Image.fromarray(warped)
+
+        with self.assertRaises(ValueError):
+            gt._register_panel(camera(rgb), mask)
+        _, _, info = paint._calibrate_panel(camera(rgb), mask, z)
+        self.assertGreater(info["result_iou"], 0.97)
+        self.assertLess(abs(info["roll_degrees"] + 3.1), 0.7)
+        rgb[mask] = [125, 135, 120]
+        with self.assertRaisesRegex(ValueError, "landmarks"):
+            paint._calibrate_panel(camera(rgb), mask, z)
