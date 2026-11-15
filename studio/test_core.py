@@ -179,7 +179,7 @@ raise SystemExit(1)
                 (out / "manifest.json").write_text(json.dumps({"sha256":digest, "files":["view.png"], "offlinePreviewVerified":True}))
                 return ""
             if stage == "appearance":
-                self.assertEqual(cmd[-3:], [str(out / "input-processed.png"), str(out), digest])
+                self.assertEqual(cmd[-5:], [str(out / "input-processed.png"), str(out), digest, "--observed-view", "front"])
                 return json.dumps({"sha256":digest, "status":"needs_review"})
             self.fail("Shape generation repeated.")
         self.core._command = verify
