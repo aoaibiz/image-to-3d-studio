@@ -116,3 +116,5 @@ node viewer/make-preview.cjs my-car.glb my-car-preview.html
 ```
 
 [エンジンの版・設定](engine/README.md)、[ビューアーと検品画像の生成方法](viewer/README.md)、[検証結果と限界](VERIFICATION.md) を参照してください。プロジェクトのコードは [MIT](LICENSE)、車の原画は [CC0](demo/README.md) です。モデルと依存ライブラリの条件は [THIRD_PARTY.md](THIRD_PARTY.md) に分けて記録しています。
+
+公開版の更新時は[ツールカタログの掲載ページ](https://mcp-tools-catalog.sparkling-poetry-53ca.workers.dev/tools/image-to-3d-studio)にも、導入先・実際に配布したバージョン・利用できるMCPツールを反映してください。検証中の変更にはドラフトPRへのリンクを使います。
