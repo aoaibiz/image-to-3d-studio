@@ -11,7 +11,7 @@ from PIL import Image
 
 from engine import guided_texture as gt
 from engine.triposg_cpu import atomic_json, writer_lock
-from engine.visual_brief import json_sha, validate_provider_observations
+from engine.visual_brief import json_sha, validate_photo_observations
 
 
 VERSION = "hidden-front-layout-v1"
@@ -242,16 +242,7 @@ def review_hidden_paint(
     """Check a proposed sheet before projection. A true hold_projection must block automatic use."""
     model = Path(model)
     source_sha = hashlib.sha256(gt._single(source_photo, 32 * gt.MIB)).hexdigest()
-    validate = validate_provider_observations
-    if (
-        isinstance(visual_brief, dict)
-        and visual_brief.get("method") == "codex-photo-observations-v1"
-    ):
-        from engine.codex_photo_observations import (
-            validate_provider_observations as validate,
-        )
-
-    brief = None if visual_brief is None else validate(visual_brief, source_sha)
+    brief = None if visual_brief is None else validate_photo_observations(visual_brief, source_sha)
     matte = gt._single(foreground, 32 * gt.MIB)
     generated = gt._single(inferred_sheet, 32 * gt.MIB)
     inputs = {
