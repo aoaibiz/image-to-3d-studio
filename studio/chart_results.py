@@ -40,6 +40,8 @@ def chart_files(out, settings, source_sha):
         names = {"shape-master.glb", "appearance.json", "generation.json", "chart-result.json"}
         if decision == "inferred_chart":
             names.update(CHART_PAINT_FILES)
+        else:
+            names.add("continuity-paint.json")
         sealed = settings["artifact_sha256"]
         if not names <= sealed.keys() or any((out / n).resolve() != out.resolve() / n for n in names):
             return None

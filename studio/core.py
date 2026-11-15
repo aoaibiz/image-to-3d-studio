@@ -291,7 +291,6 @@ class JobCore:
                 names.extend(["shape-master.glb", "appearance.json", "generation.json"])
             if job["config"].get("pipeline") in (SF3D_PIPELINE, PIXAL_PIPELINE):
                 names.extend(["provider-native.glb", "generation.json"])
-            from engine.pipeline import SG_CHART_PIPELINE
             chart = job["config"].get("pipeline") == SG_CHART_PIPELINE
             if chart and job["status"] == "needs_review":
                 from .chart_results import chart_files

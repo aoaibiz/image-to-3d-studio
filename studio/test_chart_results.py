@@ -21,7 +21,7 @@ class ChartResultsTest(unittest.TestCase):
         self.report = {"pipeline": "triposg-codex-surface-chart-v1", "source_sha256": self.source,
                        "shape_sha256":"d"*64, "base_sha256":self.sha, "output_sha256":self.sha}
         self.settings = {"artifact_sha256": dict.fromkeys(
-            {"shape-master.glb","generation.json","appearance.json","chart-result.json",*CHART_PAINT_FILES}, self.sha)}
+            {"shape-master.glb","generation.json","appearance.json","chart-result.json","continuity-paint.json",*CHART_PAINT_FILES}, self.sha)}
         (self.out / "settings.json").write_text(json.dumps(self.settings))
         checked = patch("studio.chart_results._checked", return_value=self.report)
         self.validate = checked.start()
@@ -34,6 +34,7 @@ class ChartResultsTest(unittest.TestCase):
             names, summary = chart_files(self.out, self.settings, self.source)
             self.assertIn("chart-result.json", names)
             self.assertEqual(set(names) & CHART_PAINT_FILES, CHART_PAINT_FILES if calls else set())
+            self.assertEqual("continuity-paint.json" in names, calls == 0)
             self.assertEqual(summary["paint_attempts"], calls)
         self.report["paint_attempts"] = 0
         self.assertIsNone(chart_files(self.out, self.settings, self.source))
