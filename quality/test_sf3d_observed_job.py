@@ -60,6 +60,65 @@ class DecisionTests(unittest.TestCase):
         with self.assertRaises(job.NeedsReview):
             job._appearance_mode(context, False)
 
+    def test_full_requires_two_registered_views_and_no_copy_veto(self):
+        from engine import native_full_paint as full
+        from engine import native_region_paint as region
+
+        focal = observed(cues={"focal": {"family": "geometric"}})
+        self.assertEqual(
+            job._appearance_mode(focal, False, full_supported=True), "inferred_paint"
+        )
+        self.assertEqual(
+            job._appearance_mode(
+                observed(reverse="distinct_working_surface"), False, full_supported=True
+            ),
+            "inferred_paint",
+        )
+        repeated = observed(cues={"repeated": {"family": "geometric"}})
+        args = [None] * 11
+        args[7] = {"visual_brief": repeated}
+        with (
+            patch.object(full, "paint_native_full") as accepted,
+            patch.object(region, "paint_native_region") as regional,
+        ):
+            self.assertEqual(
+                job._synthesize(*args)[:2], ("guided_full", "full-paint.json")
+            )
+            accepted.assert_called_once()
+            regional.assert_not_called()
+        with (
+            patch.object(
+                full,
+                "paint_native_full",
+                side_effect=full.NativeFullRegistrationError("outline"),
+            ),
+            patch.object(
+                full,
+                "preflight_native_paint",
+                return_value={"region_depth_eligible": True},
+            ),
+            patch.object(region, "paint_native_region") as regional,
+        ):
+            self.assertEqual(
+                job._synthesize(*args), ("guided_region", "region.json", "outline")
+            )
+            regional.assert_called_once()
+            args[7] = {"visual_brief": focal}
+            with self.assertRaises(job.NeedsReview):
+                job._synthesize(*args)
+            regional.assert_called_once()
+        for error in (
+            ValueError("wrong source"),
+            full.NativeFullReviewHold("copy veto"),
+        ):
+            with (
+                patch.object(full, "paint_native_full", side_effect=error),
+                patch.object(region, "paint_native_region") as regional,
+                self.assertRaises(ValueError),
+            ):
+                job._synthesize(*args)
+            regional.assert_not_called()
+
     def test_uncertain_receipt_or_wrong_paint_does_not_auto_finish(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

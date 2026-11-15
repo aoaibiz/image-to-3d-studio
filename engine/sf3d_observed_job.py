@@ -27,6 +27,9 @@ ARTIFACTS = {
 }
 
 
+FULL_ARTIFACTS = (ARTIFACTS - {"region.json"}) | {"full-paint.json"}
+
+
 class NeedsReview(ValueError):
     """A source-shaped model remains privately available, but this finish is withheld."""
 
@@ -88,7 +91,10 @@ def _request(work, stage, journal, *, completed=None):
         if (
             not journal.exists()
             and not (completed and completed.exists())
-            and (not journal.parent.exists() or not any(journal.parent.iterdir()))
+            and (
+                not journal.parent.exists()
+                or all(p.name == "run.lock" for p in journal.parent.iterdir())
+            )
         ):
             files.atomic_json(fence, {"stage": stage, "state": "local_preflight"})
         raise
@@ -186,7 +192,7 @@ NATIVE_ARTIFACTS = {
 }
 
 
-def _appearance_mode(observations, submitted):
+def _appearance_mode(observations, submitted, *, full_supported=False):
     # A recovery may only repeat the local analysis of an existing provider attempt.
     if submitted:
         return "guided_region"
@@ -194,12 +200,16 @@ def _appearance_mode(observations, submitted):
     guess = context.get("interpretation", {})
     distinct = {"distinct_working_surface", "display_or_interface", "opening_or_cavity"}
     if distinct.intersection(guess.get("reverse_candidates", [])):
+        if full_supported:
+            return "inferred_paint"
         raise NeedsReview(
             "写真に写っていない異なる機能面が推定されます。公式モデルを保管しました。"
         )
     if "repeated" in observations["observed_face_cues"]:
         return "guided_region"
     if observations["observed_face_cues"]:
+        if full_supported:
+            return "inferred_paint"
         raise NeedsReview(
             "局所的な正面の意匠だけを確認しました。裏面へ広げる根拠がありません。"
         )
@@ -414,6 +424,21 @@ def _native_inspection(base, reg, observations, report_dir):
         )
 
 
+def _publish(stage, out, names, source_sha):
+    _validate_result(stage, source_sha)
+    # A held preview is a separate product state. Preserve its previous receipt privately
+    # when a later, explicitly resumed run succeeds, including its exact original preview.
+    if (out / "review-hold.json").is_file():
+        work = out / "sf3d-observed-work"
+        archive = Path(tempfile.mkdtemp(prefix="previous-hold-", dir=work))
+        for name in ("review-hold.json", "review-native.glb", "review-native.png"):
+            if (out / name).is_file():
+                os.replace(out / name, archive / name)
+    for name in sorted(names):
+        os.replace(stage / name, out / name)
+    os.replace(stage / "settings.json", out / "settings.json")
+
+
 def _native_finish(out, source, base, original, reg, observations, observation):
     work = out / "sf3d-observed-work"
     _native_inspection(base, reg, observations, work)
@@ -453,10 +478,7 @@ def _native_finish(out, source, base, original, reg, observations, observation):
             },
         }
         files.atomic_json(stage / "settings.json", meta)
-        _validate_result(stage, hist["source_sha256"])
-        for n in sorted(NATIVE_ARTIFACTS):
-            os.replace(stage / n, out / n)
-        os.replace(stage / "settings.json", out / "settings.json")
+        _publish(stage, out, NATIVE_ARTIFACTS, hist["source_sha256"])
     return meta
 
 
@@ -464,7 +486,14 @@ def _validate_result(out, source_sha):
     meta = files.read_json(out / "settings.json")
     hashes = meta["artifact_sha256"]
     native = meta.get("appearance_mode") == "native_material"
-    required = NATIVE_ARTIFACTS if native else ARTIFACTS
+    modes = {
+        "native_material": NATIVE_ARTIFACTS,
+        "guided_region": ARTIFACTS,
+        "guided_full": FULL_ARTIFACTS,
+    }
+    if meta.get("appearance_mode") not in modes:
+        raise ValueError("不明な仕上げ方式です。")
+    required = modes[meta["appearance_mode"]]
     if (
         set(hashes) != required
         or meta["pipeline"] != PIPELINE
@@ -492,7 +521,10 @@ def _validate_result(out, source_sha):
         ):
             raise ValueError("元の形状・観察・無追加塗装の検品証跡が一致しません。")
         return meta
-    region = files.read_json(out / "region.json")
+    record_name = (
+        "full-paint.json" if meta["appearance_mode"] == "guided_full" else "region.json"
+    )
+    region = files.read_json(out / record_name)
     if (
         gen["source_sha256"] != source_sha
         or gen["display_glb_sha256"] != meta["glb_sha256"]
@@ -518,6 +550,45 @@ def valid(out, settings):
         return False
 
 
+def _synthesize(*args):
+    from engine.native_full_paint import (
+        NativeFullRegistrationError,
+        NativeFullReviewHold,
+        paint_native_full,
+        preflight_native_paint,
+    )
+
+    from engine.native_region_paint import paint_native_region
+
+    try:
+        paint_native_full(*args)
+        return "guided_full", "full-paint.json", None
+    except NativeFullReviewHold as exc:
+        raise NeedsReview(str(exc)) from exc
+    except NativeFullRegistrationError as exc:
+        full_reason = str(exc)
+    native, _, _, _, registration, _, _, layout, *_ = args
+    observation = layout["visual_brief"]
+    guesses = (
+        observation.get("function_context", {})
+        .get("interpretation", {})
+        .get("reverse_candidates", [])
+    )
+    if (
+        "repeated" not in observation["observed_face_cues"]
+        or {
+            "distinct_working_surface",
+            "display_or_interface",
+            "opening_or_cavity",
+        }.intersection(guesses)
+        or not preflight_native_paint(native, registration)["region_depth_eligible"]
+    ):
+        raise NeedsReview("2方向の全体形状が合わず、部分投影の根拠も不足しています。")
+    # Validation/identity errors from the native kernel remain real failures.
+    paint_native_region(*args)
+    return "guided_region", "region.json", full_reason
+
+
 def _export(
     out,
     source,
@@ -532,7 +603,6 @@ def _export(
     orientation,
 ):
     from engine.finish_export import embed_master
-    from engine.native_region_paint import paint_native_region
     from engine.sf3d_provider import native_glb
     from engine.sf3d_shape_job import oriented_glb
 
@@ -543,23 +613,21 @@ def _export(
     with tempfile.TemporaryDirectory(dir=out) as tmp:
         stage = Path(tmp)
         region_out = stage / "native"
-        try:
-            paint_native_region(
-                native,
-                proxy / "model.glb",
-                source,
-                matte,
-                reg,
-                guides,
-                sheet,
-                layout,
-                receipt,
-                orientation,
-                region_out,
-            )
-        except ValueError as exc:
-            raise NeedsReview(str(exc)) from exc
-        region = files.read_json(region_out / "region.json")
+        mode, record_name, full_reason = _synthesize(
+            native,
+            proxy / "model.glb",
+            source,
+            matte,
+            reg,
+            guides,
+            sheet,
+            layout,
+            receipt,
+            orientation,
+            region_out,
+        )
+        region = files.read_json(region_out / record_name)
+        required = FULL_ARTIFACTS if mode == "guided_full" else ARTIFACTS
         finished = region_out / "model.glb"
         if (
             region["source_glb"] != files.digest(native)
@@ -587,7 +655,7 @@ def _export(
             (finished, "finished-native.glb"),
             (matte, "input-processed.png"),
             (region_out / "texture.png", "texture.png"),
-            (region_out / "region.json", "region.json"),
+            (region_out / record_name, record_name),
             (guides / "guides.png", "guided-views.png"),
             (guides / "request-guide.json", "guided-layout.json"),
             (sheet, "inferred-paint.png"),
@@ -600,6 +668,8 @@ def _export(
             "camera": original["camera"],
             "registration": reg,
             "photo_observation": observation,
+            "paint_application": mode,
+            "full_sheet_registration_failure": full_reason,
             "paint": {
                 k: receipt[k]
                 for k in (
@@ -627,7 +697,7 @@ def _export(
         meta = {
             **original,
             "pipeline": PIPELINE,
-            "appearance_mode": "guided_region",
+            "appearance_mode": mode,
             "engine": "Stable Fast 3D + ChatGPT observed native paint",
             "glb_sha256": artifact["sha256"],
             "geometry_master": "shape-master.glb",
@@ -635,13 +705,10 @@ def _export(
             "texture_size": 1024,
             "visual_quality": "needs_review",
             "photo_observer": observation["method"],
-            "artifact_sha256": {n: files.digest(stage / n) for n in sorted(ARTIFACTS)},
+            "artifact_sha256": {n: files.digest(stage / n) for n in sorted(required)},
         }
         files.atomic_json(stage / "settings.json", meta)
-        _validate_result(stage, original["input_sha256"])
-        for name in sorted(ARTIFACTS):
-            os.replace(stage / name, out / name)
-        os.replace(stage / "settings.json", out / "settings.json")
+        _publish(stage, out, required, original["input_sha256"])
     return meta
 
 
@@ -810,6 +877,7 @@ def _guard_downstream(out, work):
                 "inferred-paint.png",
                 "hidden-review.json",
                 "region.json",
+                "full-paint.json",
                 "texture.png",
             )
         )
@@ -886,11 +954,13 @@ def run(source, out, *, setup, progress=None, cancelled=None):
             matte = base / "input-processed.png"
             enter("registration")
             reg = _registration(native, matte, work)
-            submitted = (account / "guided-paint").exists() or (
-                work / "paint-attempt.json"
-            ).exists()
+            fence = work / "paint-attempt.json"
+            submitted = (account / "guided-paint/receipt.json").is_file() or (
+                fence.is_file()
+                and files.read_json(fence).get("state") != "local_preflight"
+            )
             stage = "observation"
-            mode = _appearance_mode(observations, submitted)
+            mode = _appearance_mode(observations, submitted, full_supported=True)
             if mode == "native_material":
                 enter("native_inspection")
                 meta = _native_finish(
@@ -910,6 +980,14 @@ def run(source, out, *, setup, progress=None, cancelled=None):
                     progress("export")
                 return meta
             enter("guides")
+            if not submitted:
+                from engine.native_full_paint import preflight_native_paint
+
+                preflight = preflight_native_paint(native, reg)
+                if preflight["full_sheet_eligible"] is not True:
+                    raise NeedsReview(
+                        "元の公式材質で未観測面の推定塗装を検品できません。"
+                    )
             proxy = _proxy(source, native, matte, work, reg)
             guides, layout = guided_shape_job._prepare(
                 source,
@@ -977,7 +1055,14 @@ def run(source, out, *, setup, progress=None, cancelled=None):
                 },
             )
             return meta
-        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            KeyError,
+            TypeError,
+            ImportError,
+        ) as exc:
             if isinstance(exc, NeedsReview):
                 _save_hold(out, base, key, stage)
                 status, code = "needs_review", "sf3d_observed_review"
