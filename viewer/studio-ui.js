@@ -18,6 +18,7 @@ app.innerHTML = `
     <div id="job-state" role="status" aria-live="polite"><p>画像を選んでください。</p></div>
     <a id="appearance-sheet" target="_blank" rel="noopener" hidden>入力画像と立体の形・色を見比べる</a>
     <a id="held-sheet" target="_blank" rel="noopener" hidden>元の立体の検品画像を開く</a>
+    <a id="chart-result" target="_blank" rel="noopener" hidden>模様の推定と検品記録</a>
     <div id="local-paint-files" hidden>
       <a target="_blank" rel="noopener">推定塗装の検品記録</a>
       <a download="continuity-native.glb">推定塗装のGLBを保存</a>
@@ -44,6 +45,7 @@ const state = document.querySelector('#job-state');
 const lastKey = 'image3d:last-job';
 const tripoSR = 'triposr-auto-finish-v2';
 const tripoSG = 'triposg-local-v1';
+const chartSG = 'triposg-codex-surface-chart-v1';
 const guidedSG = 'triposg-codex-guided-v1';
 let pipeline = null;
 let file = null, imageHash = '', jobId = '', stream = null, loadingJob = '', busy = false, jobActive = false, choice = 0, scrollOnResult = false;
@@ -91,7 +93,7 @@ async function readEngine() {
   try {
     const engine = await api('/api/engine', { cache: 'no-store' });
     const local = engine.local === true && [tripoSR, tripoSG].includes(engine.pipeline);
-    const guided = [guidedSG, 'triposg-host-guided-v1', 'triposg-codex-observed-v1'].includes(engine.pipeline) && engine.local === false && engine.recipient === 'OpenAI ChatGPT';
+    const guided = [guidedSG, 'triposg-host-guided-v1', 'triposg-codex-observed-v1', chartSG].includes(engine.pipeline) && engine.local === false && engine.recipient === 'OpenAI ChatGPT';
     const sf3d = engine.pipeline === 'sf3d-official-preview' && engine.local === false && engine.recipient === 'Stability AI / Hugging Face';
     const observedSF3D = engine.pipeline === 'sf3d-codex-observed-v1' && engine.local === false
       && Array.isArray(engine.recipients) && engine.recipients.length === 2
@@ -110,6 +112,7 @@ async function readEngine() {
     } else if (guided) {
       info.textContent = '形状はこの端末で生成します。背面の塗装を推定するため、元写真と立体の確認画像をOpenAIに送信し、本人のChatGPT利用枠を使用します。';
       if (pipeline === 'triposg-codex-observed-v1') info.textContent = '形状はこの端末で生成します。本人のChatGPT利用枠で、元写真の外観解析を1回、写真と形状ガイドから背面の塗装を推定する画像生成を1回、OpenAIに依頼します。';
+      if (pipeline === chartSG) info.textContent = '形状はこの端末のTripoSGで生成します。メタデータを除いた写真をOpenAIに送り、本人のChatGPT利用枠で外観を1回解析します。塗装の推定が必要な場合は、写真と立体に沿った塗装ガイドを送り、画像を最大1回生成します。';
       if (pipeline === 'triposg-host-guided-v1') info.textContent += '画像生成に対応するCodexに、このジョブを引き継いでください。';
     } else info.textContent = pipeline === tripoSG
       ? 'TripoSG は画像の切り抜き・形状の生成・着色をすべてこの端末で処理します。CPU では数時間かかる場合があります。'
@@ -211,7 +214,11 @@ async function loadResult(job) {
     const resultSF3D = ['sf3d-official-preview', 'sf3d-codex-observed-v1'].includes(settings.pipeline);
     front.textContent = settings.pipeline === pixalPipeline ? '+Z 視点' : resultSF3D ? '推定入力側 +Z' : resultSG ? '+Z 視点' : '入力側 +Z';
     const selectedPose = !resultSG && settings.source_selection?.detected_count ? `全${settings.source_selection.detected_count}個の候補から上段の中央に近い1個を選びました。` : '';
-    const shapeNote = settings.pipeline === pixalPipeline ? 'Pixal3Dで形状と材質を推定しました。写真に隠れた面の形と模様を確認してください。'
+    const shapeNote = settings.pipeline === chartSG
+      ? (job.surface_chart?.decision === 'local_continuity'
+          ? '元写真の模様をもとに、この端末で見えない面の色を推定しました。塗装用の外部画像生成は0回です。'
+          : '立体に沿った塗装ガイドから、見えない面の色を推定しました。塗装用の外部画像生成は1回です。')
+      : settings.pipeline === pixalPipeline ? 'Pixal3Dで形状と材質を推定しました。写真に隠れた面の形と模様を確認してください。'
       : resultSG
       ? 'TripoSG が立体の形と向きを推定しました。入力画像に写った側は、立体を回して確認してください。'
       : settings.pipeline === 'sf3d-codex-observed-v1'
@@ -271,6 +278,9 @@ async function refresh(id) {
   const { job } = await api(`/api/jobs/${id}`);
   if (id !== jobId) return;
   showControls(job);
+  const chartResult = document.querySelector('#chart-result');
+  chartResult.hidden = !(job.status === 'needs_review' && job.surface_chart && job.artifacts.includes('chart-result.json'));
+  if (!chartResult.hidden) chartResult.href = `/api/jobs/${id}/artifacts/chart-result.json`;
   const paintFiles = document.querySelector('#local-paint-files');
   paintFiles.hidden = !(job.status === 'needs_review' && job.local_continuity?.external_image_generations === 0
     && job.artifacts.includes('continuity-paint.json') && job.artifacts.includes('continuity-native.glb'));

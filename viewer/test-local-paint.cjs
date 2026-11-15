@@ -1,5 +1,5 @@
 // Run against a previously generated Studio job. No generation is submitted.
-// node viewer/test-local-paint.cjs <loopback-port> <job-id> <local_continuity|native_material|review_hold>
+// node viewer/test-local-paint.cjs <loopback-port> <job-id> <mode>
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const { readFile } = require('node:fs/promises');
@@ -9,7 +9,7 @@ async function main() {
   const [port, id, mode] = process.argv.slice(2);
   assert(/^\d{1,5}$/.test(port) && Number(port) > 0 && Number(port) <= 65535);
   assert(/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/.test(id));
-  assert(['local_continuity', 'native_material', 'review_hold'].includes(mode));
+  assert(['local_continuity', 'native_material', 'review_hold', 'chart_local', 'chart_generated', 'chart_hold'].includes(mode));
   const origin = 'http://127.0.0.1:' + port;
   const browser = await chromium.launch({
     channel: 'chrome', headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
@@ -22,11 +22,16 @@ async function main() {
       assert(response.ok()); return response.json();
     };
     const { job } = await read('');
-    const hold = mode === 'review_hold';
+    const chart = mode.startsWith('chart_');
+    const hold = mode === 'review_hold' || mode === 'chart_hold';
     const local = mode === 'local_continuity';
     assert.equal(job.status, hold ? 'review_hold' : 'needs_review');
     const settings = hold ? null : await read('/artifacts/settings.json');
-    if (settings) assert.equal(settings.appearance_mode, mode);
+    if (settings && !chart) assert.equal(settings.appearance_mode, mode);
+    if (chart) {
+      assert.equal(job.config.pipeline, 'triposg-codex-surface-chart-v1');
+      if (!hold) assert.equal(job.surface_chart.decision, mode === 'chart_local' ? 'local_continuity' : 'inferred_chart');
+    }
     const expected = hold ? job.hold.preview_sha256 : settings.glb_sha256;
     const errors = [];
     page.on('pageerror', err => errors.push(err.message));
@@ -35,7 +40,19 @@ async function main() {
     if (!hold) await page.waitForFunction(() => document.querySelector('#job-state').textContent.includes('形式検査'));
     const links = page.locator('#local-paint-files');
     assert.equal(await links.isVisible(), local);
-    assert.equal((await page.locator('#job-state').innerText()).includes('塗装用の外部画像生成は0回'), local);
+    const notice = await page.locator('#job-state').innerText();
+    assert.equal(notice.includes('塗装用の外部画像生成は0回'), local || mode === 'chart_local');
+    assert.equal(await page.locator('#chart-result').isVisible(), chart && !hold);
+    if (chart && !hold) {
+      assert.equal(await page.locator('#chart-result').getAttribute('href'), path + '/artifacts/chart-result.json');
+      const report = await read('/artifacts/chart-result.json');
+      assert.equal(report.output_sha256, expected);
+      assert.equal(report.paint_attempts, mode === 'chart_local' ? 0 : 1);
+    }
+    if (mode === 'chart_hold') {
+      assert(notice.includes(job.hold.reason));
+      assert.equal((await page.request.get(origin + path + '/artifacts/model.glb')).status(), 404);
+    }
     if (local) {
       assert((await page.locator('.inspection-title').innerText()).includes('元写真から模様を補ったモデル'));
       for (const [i, name] of ['continuity-paint.json', 'continuity-native.glb'].entries()) {

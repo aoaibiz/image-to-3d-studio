@@ -291,6 +291,18 @@ class JobCore:
                 names.extend(["shape-master.glb", "appearance.json", "generation.json"])
             if job["config"].get("pipeline") in (SF3D_PIPELINE, PIXAL_PIPELINE):
                 names.extend(["provider-native.glb", "generation.json"])
+            from engine.pipeline import SG_CHART_PIPELINE
+            chart = job["config"].get("pipeline") == SG_CHART_PIPELINE
+            if chart and job["status"] == "needs_review":
+                from .chart_results import chart_files
+                try:
+                    selection = chart_files(folder, json.loads((folder / "settings.json").read_bytes()), job["input_sha256"])
+                except (OSError, ValueError):
+                    selection = None
+                if selection:
+                    chart_names, job["surface_chart"] = selection
+                    names = [name for name in names if name not in GUIDED_OUTPUTS]
+                    names.extend(name for name in chart_names if name not in names)
             if job["config"].get("pipeline") == SF3D_OBSERVED_PIPELINE and job["status"] == "needs_review":
                 candidates = {"shape-master.glb", "generation.json", "finished-native.glb",
                               "guided-views.png", "guided-layout.json", "inferred-paint.png",
@@ -334,11 +346,17 @@ class JobCore:
                 name
                 for name in names
                 if job["status"] == "needs_review" and (folder / name).is_file()
+                and (not chart or "surface_chart" in job)
             ]
             job["review"] = None
             if job["status"] == "review_hold" and job["config"].get("pipeline") == SF3D_OBSERVED_PIPELINE:
                 from .review_hold import read_hold
                 diagnostic = read_hold(folder, job["input_sha256"])
+                if diagnostic:
+                    job["hold"], job["artifacts"] = diagnostic
+            if chart and job["status"] == "review_hold":
+                from .chart_results import read_chart_hold
+                diagnostic = read_chart_hold(folder, job["input_sha256"])
                 if diagnostic:
                     job["hold"], job["artifacts"] = diagnostic
             if "review.json" in job["artifacts"]:
