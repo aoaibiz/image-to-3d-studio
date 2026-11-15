@@ -1,6 +1,6 @@
 {
   "name": "image-to-3d-studio",
-  "version": "0.1.0",
+  "version": "0.2.0-preview.1",
   "description": "Generate and inspect 3D models with a local studio service.",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",

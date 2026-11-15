@@ -2,7 +2,10 @@ import { createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 
-export const BASE = "http://127.0.0.1:47631";
+const port = process.env.STUDIO_PORT ?? "47631";
+if (!/^[0-9]{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535)
+  throw Error("STUDIO_PORT must be an integer from 1 to 65535");
+export const BASE = `http://127.0.0.1:${Number(port)}`;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function jobPath(id) {
   if (!uuid.test(id)) throw Error("Invalid job ID");

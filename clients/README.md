@@ -20,7 +20,7 @@ node cli.mjs export JOB_ID model.glb path/to/output.glb
 
 MCP uses stdio: run `node clients/mcp.mjs` with the absolute path appropriate to the installation. Tools accept image bytes encoded as base64, never local paths. `artifact_chunk` returns up to 256 KiB per call and a `nextOffset`; its maximum offset is 64 MiB. `wait` uses the local event stream. Cancelling the MCP call stops waiting; use the `cancel` tool to cancel the job itself.
 
-Run `node --test integration.test.mjs` with port 47631 free. This uses the official SDK client and a local test service, and checks the actual saved PNG bytes. It does not run inference or prove the real service works.
+Run `npm test`; the tests reserve isolated ephemeral loopback ports. This uses the official SDK client and a local test service, and checks the actual saved PNG bytes. It does not run inference or prove the real service works.
 
 ## Codex local plugin
 
@@ -49,3 +49,13 @@ Claude Code and Cursor can run a local stdio MCP server, but neither host has be
 Cloud agents cannot reach the user's `127.0.0.1` through this local setup. Remote access would require a separately designed and authorized authenticated bridge and explicit exposure decisions; no tunnel or bridge is provided by default.
 
 For optional cat-specific geometry analysis, run `node cli.mjs inspect JOB_ID profile.json`; without a profile it reads the existing `inspection.json`. `node cli.mjs review JOB_ID review.json` records a manual evaluation after examining both material and clay views. The review JSON requires `sha256`, `decision` (`pass`, `fail`, or `review`), `reference_fidelity`, `major_part_volume`, `attachment_material`, and `inspected_views` exactly `["material","clay"]`. Each text field is required and limited to 4,000 characters. Job `status` describes processing; `review` records the independent manual decision. A new geometric inspection invalidates an earlier manual review. The MCP `inspect` and `review` tools use the same fields and validation.
+
+## One-picture workflow and review
+
+Use one PNG, JPEG, or WebP (up to 20 MiB) as the reference. Start the local service first; run `diagnose`, then submit the selected image bytes once with a stable request key. Record the returned job ID and use `wait` or `watch` for the event stream. `status` reports the processing state and the separate `review` field records an inspection decision. `needs_review` means the assets are ready for inspection, not that the shape or appearance has passed.
+
+Inspect the original reference, model, and hash-matched material and clay views together, including the back, underside, joints, and parts visible in the input. Use `inspection.json` for format and measured-geometry results and `settings.json` for input/output hashes, processing and any applied or skipped steps. An image cannot establish hidden surfaces, physical scale, or manufacturing suitability. The manual cat profile supported by the `inspect` tool is explicitly specified by the operator; it is not a general-purpose animal, vehicle or product classifier. The optional geometric casting and atlas color tools have separately documented narrow inputs and cannot certify a model: see `engine/CAST.md` and `quality/PAINT.md`. Preserve input and output hashes and report uncertain or skipped analysis as such.
+
+Every image uses local TripoSR for the base reconstruction. Automated category-specific processing, when available and supported by measured image evidence, is a heuristic rather than identification or a guarantee of fidelity; use the job's own `settings.json` to see what actually ran. If the evidence is insufficient, retain and inspect the base result and report the fallback. Generation, inferred depth and visual review must remain distinct in the report. No image is sent to a remote service by this local workflow.
+
+For an alternate local service port, start the service with its --port option and set STUDIO_PORT to a decimal integer from 1 to 65535 in the CLI or standalone MCP process environment. The host remains fixed at 127.0.0.1. The default is 47631. The packaged Codex plugin may not inherit custom environment variables; use its default port unless the host is explicitly configured to pass the variable.

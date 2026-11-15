@@ -27,11 +27,52 @@ class JobError(Exception):
     pass
 
 
+def _lock_store(directory):
+    """Hold one OS lock per job store for the lifetime of its worker."""
+    handle = open(directory / ".store.lock", "a+b")
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return handle
+    except OSError as exc:
+        handle.close()
+        raise RuntimeError("Job store is already in use") from exc
+
+
+def _unlock_store(handle):
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    handle.close()
+
+
 class JobCore:
-    def __init__(self, root=ROOT, runner=None):
+    def __init__(self, root=ROOT, runner=None, *, directory=None):
         self.root = Path(root)
-        self.directory = self.root / "jobs" / "studio"
+        self.directory = (
+            Path(directory).resolve()
+            if directory is not None
+            else self.root / "jobs" / "studio"
+        )
         self.directory.mkdir(parents=True, exist_ok=True)
+        self.store_lock = _lock_store(self.directory)
         self.db = sqlite3.connect(
             self.directory / "jobs.sqlite3", check_same_thread=False
         )
@@ -87,14 +128,17 @@ class JobCore:
             folder = self.directory / job_id / "output"
             names = [
                 "model.glb",
+                "editable.gltf",
                 "editable.obj",
                 "editable.mtl",
                 "editable.ply",
                 "material.mtl",
                 "material_0.png",
                 "texture.png",
+                "input-processed.png",
                 "settings.json",
                 "inspection.json",
+                "automatic-profile.json",
                 "semantic-inspection.json",
                 "review.json",
                 "offline-preview.html",
@@ -107,6 +151,12 @@ class JobCore:
                     if re.fullmatch(
                         r"[0-9a-f]{64}_[a-z-]+_(?:material|clay)\.png", p.name
                     )
+                ]
+                names += [
+                    p.name
+                    for p in folder.glob("material_*.png")
+                    if re.fullmatch(r"material_[0-9]+\.png", p.name)
+                    and p.name not in names
                 ]
             job["artifacts"] = [
                 name
@@ -375,7 +425,14 @@ class JobCore:
                     None,
                     stamp,
                     stamp,
-                    json.dumps({"resolution": 96, "texture_size": 1024}),
+                    json.dumps(
+                        {
+                            "resolution": 96,
+                            "texture_size": 1024,
+                            "auto_finish": True,
+                            "pipeline": "triposr-auto-finish-v1",
+                        }
+                    ),
                 ),
             )
             self._event(
@@ -467,11 +524,14 @@ class JobCore:
                         messages = {
                             "inspection": "モデルの検査に失敗しました。検査ツールと空き容量を確認して再開してください。",
                             "rendering": "プレビューの作成に失敗しました。ブラウザーと Node.js の準備を確認して再開してください。",
+                            "finishing model": "自動仕上げに失敗しました。空き容量と仕上げ環境を確認して再開してください。",
                         }
                         message = messages.get(
                             stage,
                             "3D生成に失敗しました。実行環境と空き容量を確認して再開してください。",
                         )
+                        if isinstance(exc, JobError):
+                            message = str(exc)
                         with (self.directory / job_id / "diagnostic.log").open(
                             "a", encoding="utf-8"
                         ) as log:
@@ -530,6 +590,9 @@ class JobCore:
                 "running model",
                 "extracting mesh",
                 "baking texture",
+                "selecting source",
+                "resuming finish",
+                "finishing model",
             ):
                 with self.lock:
                     if self.get(job_id)["status"] == "running":
@@ -542,6 +605,43 @@ class JobCore:
         if code:
             raise RuntimeError("command failed")
         return "".join(lines)
+
+    @staticmethod
+    def _artifacts_valid(out, settings):
+        artifacts = settings.get("artifact_sha256")
+        required = {
+            "model.glb",
+            "editable.gltf",
+            "editable.obj",
+            "editable.ply",
+            "texture.png",
+        }
+        if not isinstance(artifacts, dict) or not required.issubset(artifacts):
+            return False
+        present_materials = {
+            p.name
+            for p in out.glob("material_*.png")
+            if re.fullmatch(r"material_[0-9]+\.png", p.name) and p.is_file()
+        }
+        if not present_materials.issubset(artifacts):
+            return False
+        try:
+            for name, expected in artifacts.items():
+                if (
+                    not isinstance(name, str)
+                    or not re.fullmatch(
+                        r"(?:model\.glb|editable\.gltf|editable\.obj|editable\.ply|texture\.png|material\.mtl|material_[0-9]+\.png)",
+                        name,
+                    )
+                    or not isinstance(expected, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", expected)
+                ):
+                    return False
+                if hashlib.sha256((out / name).read_bytes()).hexdigest() != expected:
+                    return False
+            return True
+        except OSError:
+            return False
 
     def _run_pipeline(self, job_id):
         folder = self.directory / job_id
@@ -560,6 +660,7 @@ class JobCore:
         ):
             raise RuntimeError("input hash mismatch")
         valid_inference = False
+        previous = None
         try:
             previous = json.loads(settings_path.read_text(encoding="utf-8"))
             valid_inference = (
@@ -568,10 +669,35 @@ class JobCore:
                 == hashlib.sha256(glb.read_bytes()).hexdigest()
                 and previous["marching_cubes_resolution"] == config["resolution"]
                 and previous["texture_size"] == config["texture_size"]
+                and (
+                    not config.get("auto_finish")
+                    or previous.get("auto_finish_complete") is True
+                )
+                and (
+                    not config.get("pipeline")
+                    or previous.get("pipeline") == config["pipeline"]
+                )
+                and (
+                    not config.get("auto_finish")
+                    or self._artifacts_valid(out, previous)
+                )
             )
         except (OSError, ValueError, KeyError):
             pass
         if not valid_inference:
+            if not config.get("auto_finish"):
+                raise JobError(
+                    "このジョブは旧方式で作られており、元の仕上がりを復元できません。新しいジョブを作成してください。"
+                )
+            if (
+                config.get("auto_finish")
+                and isinstance(previous, dict)
+                and previous.get("auto_finish_complete") is True
+                and not (out / "raw-export" / "finish-checkpoint.json").is_file()
+            ):
+                raise RuntimeError(
+                    "finished artifacts are damaged and no finish checkpoint exists"
+                )
             # Only clear files inside this job's own output directory.
             for p in out.iterdir():
                 if p.is_file():
@@ -597,13 +723,40 @@ class JobCore:
             or settings["input_sha256"] != self.get(job_id)["input_sha256"]
             or settings["marching_cubes_resolution"] != config["resolution"]
             or settings["texture_size"] != config["texture_size"]
+            or (
+                config.get("auto_finish")
+                and settings.get("auto_finish_complete") is not True
+            )
+            or (
+                config.get("pipeline")
+                and settings.get("pipeline") != config["pipeline"]
+            )
         ):
             raise RuntimeError("hash mismatch")
+        if config.get("auto_finish"):
+            if not self._artifacts_valid(out, settings):
+                raise RuntimeError("artifact hash mismatch")
         validator = self.root / ".runtime" / "validator" / "gltf_validator.exe"
         cmd = [py, str(self.root / "quality" / "inspection.py"), str(glb)]
+        from quality.measured_regions import measured_profile
+
+        profile = measured_profile(settings)
+        profile_path = out / "automatic-profile.json"
+        if profile is not None:
+            self._atomic_json(profile_path, profile)
+            cmd.extend(["--profile", str(profile_path)])
+        else:
+            profile_path.unlink(missing_ok=True)
         if validator.is_file():
             cmd.extend(["--validator", str(validator)])
         inspection = json.loads(self._command(job_id, cmd, "inspection"))
+        inspection["profile_source"] = (
+            "measured figure landmarks"
+            if profile
+            else "unavailable; geometry requires review"
+        )
+        if profile:
+            inspection["profile"] = profile
         if inspection["sha256"] != digest or inspection["format"]["status"] == "fail":
             raise RuntimeError("inspection failed")
         (out / "inspection.json").write_text(
@@ -639,5 +792,8 @@ class JobCore:
                 self._kill(self.process)
             self.changed.notify_all()
         self.worker.join(timeout=15)
+        if self.worker.is_alive():
+            raise RuntimeError("Job worker did not stop; store lock retained")
         self.group.close()
         self.db.close()
+        _unlock_store(self.store_lock)

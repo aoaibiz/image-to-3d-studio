@@ -1,16 +1,22 @@
 # image-to-3d-studio
 
-画像を1枚貼り付け、ローカル CPU でテクスチャ付き GLB を生成し、その場でドラッグして回す Windows 用の実験版です。背面・底面は推定形状で、寸法は相対値です。**公開した車のデモは生成・表示の動作例です。フィギュアとしての外観は検品不合格です。**
+画像を1枚貼り付けて「3D を生成」を押すと、Windows PC 内で立体を生成し、同じ画面で回して確認できます。通常操作でレシピやモデルを選ぶ必要はありません。
+
+TripoSR が画像から基礎メッシュを生成します。正面向きで耳・折り曲げた腕・脚・横に出た尾を検出できたキャラクターは、輪郭と顔料を画像から測り、丸みのある頭・胴・手足と塗装を組み立てます。車輪と窓を検出できた横向きの玩具車では、車体・窓・車輪を立体の部品として配置します。対象別の仕上げは画像をもとに形状を組み直す処理です。推論メッシュはジョブに別途保存します。
+
+特徴が揃わない場合は TripoSR の結果を開きます。いずれも背面・奥行きは推定で、生成後に材質ありと無地で外観を確認できます。似たポーズが規則的に並ぶシートでは、上段中央に近い1個を自動で選び、使ったポーズを画面に表示します。対象を指定したい場合はその部分を切り抜いて送ってください。
 
 ## 生成済みのモデルを回す
 
-[比較用の猫を回す](https://aoaibiz.github.io/image-to-3d-studio/) ・ [車を回す](https://aoaibiz.github.io/image-to-3d-studio/car.html) ・ [オフライン版と GLB をダウンロード](https://github.com/aoaibiz/image-to-3d-studio/releases/tag/v0.1.0-preview.1)
+[自動生成した車を回す](https://aoaibiz.github.io/image-to-3d-studio/auto-car/) ・ [GLB・編集用マスター・オフライン版](https://github.com/aoaibiz/image-to-3d-studio/releases/tag/v0.2.0-preview.1) ・ [材質ありの10方向](demo/auto-result/sheet-material.jpg) ・ [無地の10方向](demo/auto-result/sheet-clay.jpg)
 
-猫は技術検証用に描いた別キャラクターです。フィギュアとして解釈した補助画像を使うと、頭部3断面の奥行き／幅が0.78〜0.85になりました。脚の接合部や底面は要確認です。[材質あり](demo/control-result/sheet-material.jpg) ・ [無地](demo/control-result/sheet-clay.jpg) ・ [来歴](demo/control-result/README.md)
+上の車は同梱の CC0 イラスト1枚を、新規インストールした環境の MCP に送って生成したものです。4輪、窓、車体、ライトを全方向から見られます。元絵のグリル・パネルの線は省略されています。1枚からの完成品品質には対象ごとの差があります。[実測結果](VERIFICATION.md)
+
+前版の比較資料も残しています。[比較用の猫](https://aoaibiz.github.io/image-to-3d-studio/) ・ [従来の車](https://aoaibiz.github.io/image-to-3d-studio/car.html)
 
 ## 生成後の造形・塗装を調べる
 
-手足と胴の接合を作り直す際は、測った寸法をレシピにして滑らかな面を出力できます。部位と寸法は作業者が指定します。塗装の検査では、意図した色とテクスチャ上の領域を指定し、小さな異色のかたまりを探せます。どちらも任意のローカル CLI です。[造形レシピ](engine/CAST.md)・[塗装検査](quality/PAINT.md)
+自動生成後に手作業で接合部を調整したい場合は、別途、部位と寸法を指定したレシピから滑らかな面を出力できます。塗装の検査では、意図した色とテクスチャ上の領域を指定し、小さな異色のかたまりを探せます。どちらも任意のローカル CLI です。[造形レシピ](engine/CAST.md)・[塗装検査](quality/PAINT.md)
 
 ## 起動する
 
@@ -37,7 +43,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 - [Khronos による形式検証](demo/generated/inspection.json)・[ブラウザーでの回転とダウンロード検証](demo/generated/views/manifest.json)・[検品画像と GLB の SHA-256](demo/generated/views/evidence.json)
 - [編集可能なマスターとテクスチャ](demo/generated)。OBJ・MTL・material_0.png は一緒に保存してください。
 
-検査状態は形式・部位の形状・外観に分かれます。生成直後の `needs_review` は人または画像を確認できる AI による検品待ちです。厚み判定には対象、正面、頭と胴の領域を指定します。尻尾を含む全体の奥行きだけでは合格にしません。薄い商品に猫の基準を一律適用しません。元絵に対する顔や模様の一致は、無地の側面で見る立体感とは別に確認します。[断面の指定と回帰テスト](quality/README.md)
+検査状態は形式・部位の形状・外観に分かれます。生成直後の `needs_review` は人または画像を確認できる AI による検品待ちです。立ち姿として仕上げた対象では、画像から求めた頭・胴の位置で完成GLBの断面を検査します。範囲や断面が不明確な場合は要確認です。対象や範囲の手動指定もできます。尻尾を含む全体の奥行きだけでは合格にしません。薄い商品に猫の基準を一律適用しません。元絵に対する顔や模様の一致は、無地の側面で見る立体感とは別に確認します。[断面の指定と回帰テスト](quality/README.md)
 
 ## CLI・MCP・Codex
 
@@ -60,7 +66,7 @@ Codex のプラグイン・制作スキル、Claude Code・Cursor の設定例�
 ```powershell
 .\.runtime\venv\Scripts\python.exe tools/doctor.py --verify-weights
 .\.runtime\venv\Scripts\python.exe -m unittest discover -s quality -p 'test_*.py'
-node viewer/make-preview.cjs demo/generated/model.glb my-car-preview.html
+node viewer/make-preview.cjs my-car.glb my-car-preview.html
 ```
 
 [エンジンの版・設定](engine/README.md)、[ビューアーと検品画像の生成方法](viewer/README.md)、[検証結果と限界](VERIFICATION.md) を参照してください。プロジェクトのコードは [MIT](LICENSE)、車の原画は [CC0](demo/README.md) です。モデルと依存ライブラリの条件は [THIRD_PARTY.md](THIRD_PARTY.md) に分けて記録しています。

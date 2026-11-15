@@ -7,12 +7,13 @@ const server = http.createServer((req, res) => {
   res.end(JSON.stringify({ ok: true }));
 });
 await new Promise((resolve, reject) =>
-  server.listen(47631, "127.0.0.1", resolve).on("error", reject),
+  server.listen(0, "127.0.0.1", resolve).on("error", reject),
 );
 try {
   await test("CLI diagnose calls local studio", async () => {
     const child = spawn(process.execPath, ["cli.mjs", "diagnose"], {
       cwd: import.meta.dirname,
+      env: { ...process.env, STUDIO_PORT: String(server.address().port) },
     });
     let stdout = "",
       stderr = "";

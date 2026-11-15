@@ -67,6 +67,21 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(self.core.get(job["id"])["status"], "failed")
         self.assertIn("再開", self.core.get(job["id"])["error"])
 
+    def test_legacy_job_does_not_switch_generation_pipeline(self):
+        import json
+
+        job, _ = self.core.create(b"old", "old")
+        self.assertTrue(self.started.wait(2))
+        with self.core.lock:
+            self.core.db.execute(
+                "UPDATE jobs SET config=? WHERE id=?",
+                (json.dumps({"resolution": 96, "texture_size": 1024}), job["id"]),
+            )
+            self.core.db.commit()
+        self.core._command = lambda *args: self.fail("legacy job started new inference")
+        with self.assertRaisesRegex(JobError, "旧方式"):
+            self.core._run_pipeline(job["id"])
+
     def test_retry_reuses_hash_matched_inference_and_hides_partial_output(self):
         import hashlib, json
 
@@ -77,6 +92,16 @@ class CoreTests(unittest.TestCase):
         glb = b"fake-glb"
         digest = hashlib.sha256(glb).hexdigest()
         (folder / "model.glb").write_bytes(glb)
+        artifact_hashes = {"model.glb": digest}
+        for name in (
+            "editable.gltf",
+            "editable.obj",
+            "editable.ply",
+            "texture.png",
+            "material_12.png",
+        ):
+            (folder / name).write_bytes(b"artifact")
+            artifact_hashes[name] = hashlib.sha256(b"artifact").hexdigest()
         (folder / "settings.json").write_text(
             json.dumps(
                 {
@@ -84,6 +109,9 @@ class CoreTests(unittest.TestCase):
                     "glb_sha256": digest,
                     "marching_cubes_resolution": 96,
                     "texture_size": 1024,
+                    "auto_finish_complete": True,
+                    "pipeline": "triposr-auto-finish-v1",
+                    "artifact_sha256": artifact_hashes,
                 }
             )
         )
@@ -112,6 +140,48 @@ class CoreTests(unittest.TestCase):
         self.core._command = command
         self.core._run_pipeline(job["id"])
         self.assertEqual(stages, ["inspection", "rendering"])
+        (folder / "editable.gltf").write_bytes(b"tampered")
+        with self.assertRaisesRegex(RuntimeError, "no finish checkpoint"):
+            self.core._run_pipeline(job["id"])
+        checkpoint = folder / "raw-export" / "finish-checkpoint.json"
+        checkpoint.parent.mkdir()
+        checkpoint.write_text("saved checkpoint")
+        settings = {
+            "input_sha256": job["input_sha256"],
+            "glb_sha256": digest,
+            "marching_cubes_resolution": 96,
+            "texture_size": 1024,
+            "auto_finish_complete": True,
+            "pipeline": "triposr-auto-finish-v1",
+            "artifact_sha256": artifact_hashes,
+        }
+
+        def repair(job_id, command_args, stage):
+            if stage == "starting":
+                stages.append(stage)
+                self.assertTrue(checkpoint.is_file())
+                (folder / "model.glb").write_bytes(glb)
+                for name in (
+                    "editable.gltf",
+                    "editable.obj",
+                    "editable.ply",
+                    "texture.png",
+                    "material_12.png",
+                ):
+                    (folder / name).write_bytes(b"artifact")
+                (folder / "settings.json").write_text(json.dumps(settings))
+                return ""
+            return command(job_id, command_args, stage)
+
+        self.core._command = repair
+        self.core._run_pipeline(job["id"])
+        self.assertEqual(
+            stages, ["inspection", "rendering", "starting", "inspection", "rendering"]
+        )
+        self.assertEqual((folder / "editable.gltf").read_bytes(), b"artifact")
+        with self.core.lock:
+            self.core._update(job["id"], "needs_review", "needs_review")
+        self.assertIn("material_12.png", self.core.get(job["id"])["artifacts"])
 
     def test_review_and_semantic_inspection(self):
         import hashlib, json
@@ -161,6 +231,11 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(JobError):
             self.core.review(job["id"], review)
         inspection["format"]["status"] = "pass"
+        inspection["geometry"]["status"] = "fail"
+        (out / "inspection.json").write_text(json.dumps(inspection))
+        with self.assertRaises(JobError):
+            self.core.review(job["id"], review)
+        inspection["geometry"]["status"] = "review"
         (out / "inspection.json").write_text(json.dumps(inspection))
         self.assertEqual(
             self.core.review(job["id"], review)["review"]["decision"], "pass"

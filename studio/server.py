@@ -1,5 +1,6 @@
 """Loopback-only HTTP transport for the studio job core."""
 
+import argparse
 import json
 import mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -84,6 +85,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         parsed = urlsplit(self.path)
         path = parsed.path
+        if path == "/favicon.ico":
+            self.send_bytes(204, b"", "image/x-icon")
+            return
         if path == "/api/doctor":
             checks = {
                 "python": (ROOT / ".runtime/venv/Scripts/python.exe").is_file(),
@@ -306,11 +310,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=47631)
+    parser.add_argument("--jobs-dir", type=Path)
+    args = parser.parse_args()
     # Bind first: the listening socket is the exclusive owner lock, before recovery touches SQLite.
-    server = Server(("127.0.0.1", 47631), None)
+    server = Server(("127.0.0.1", args.port), None)
     try:
-        server.core = JobCore()
-        print("http://127.0.0.1:47631", flush=True)
+        server.core = JobCore(directory=args.jobs_dir)
+        print(f"http://127.0.0.1:{server.server_address[1]}", flush=True)
         server.serve_forever()
     except KeyboardInterrupt:
         pass

@@ -15,6 +15,7 @@ app.innerHTML = `
     <p id="selected" aria-live="polite">画像はまだ選ばれていません。</p>
     <div class="actions"><button class="primary" id="generate" disabled>3D を生成</button><button id="cancel" hidden>処理を中止</button><button id="resume" hidden>処理を再開</button></div>
     <div id="job-state" role="status" aria-live="polite"><p>画像を選んでください。</p></div>
+    <figure id="pose-preview" hidden><img width="96" height="96" alt="自動で選んだポーズ"><figcaption>使用したポーズです。別の対象を作るには、その部分を切り抜いて送ってください。</figcaption></figure>
   </div>`;
 document.querySelector('header').after(app);
 document.querySelector('[data-view=front]').textContent = '入力側 +Z';
@@ -30,9 +31,9 @@ const state = document.querySelector('#job-state');
 const lastKey = 'image3d:last-job';
 let file = null, imageHash = '', jobId = '', stream = null, loadingJob = '', busy = false, jobActive = false, choice = 0, scrollOnResult = false;
 const terminal = new Set(['needs_review', 'failed', 'cancelled', 'interrupted']);
-const stages = { queued: '順番待ち', starting: '生成の準備中', 'initializing model': 'モデルを準備中', preprocessing: '画像を整えています', 'running model': '立体を推定中', 'extracting mesh': '形状を取り出しています', 'baking texture': '表面の色を作成中', inference: '立体を生成中', mesh: '形状を作成中', texture: 'テクスチャを作成中', export: 'GLB を出力中', inspection: '形式を検査中', rendering: '確認画像を作成中', needs_review: '確認待ち', failed: '処理に失敗', cancelled: '中止', interrupted: '中断' };
+const stages = { queued: '順番待ち', starting: '生成の準備中', 'initializing model': 'モデルを準備中', preprocessing: '画像を整えています', 'selecting source': '対象を選んでいます', 'finishing model': '形と塗装を仕上げています', 'resuming finish': '保存した立体から仕上げを再開しています', 'running model': '立体を推定中', 'extracting mesh': '形状を取り出しています', 'baking texture': '表面の色を作成中', inference: '立体を生成中', mesh: '形状を作成中', texture: 'テクスチャを作成中', export: 'GLB を出力中', inspection: '形式を検査中', rendering: '確認画像を作成中', needs_review: '確認待ち', failed: '処理に失敗', cancelled: '中止', interrupted: '中断' };
 function message(text) { state.textContent = text; }
-function idKey(hash) { return 'image3d:input:' + hash; }
+function idKey(hash) { return 'image3d:finish-v1:input:' + hash; }
 function showControls(job) {
   const active = job.status === 'running' || job.status === 'queued';
   jobActive = active;
@@ -49,6 +50,7 @@ async function choose(candidate) {
   if (selection !== choice) return;
   file = candidate; imageHash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
   selected.textContent = `選択中: ${candidate.name || '貼り付け画像'} (${(candidate.size / 1024 / 1024).toFixed(2)} MB)`;
+  document.querySelector('#pose-preview').hidden = true;
   generate.disabled = busy || jobActive;
   if (!jobId) message('画像を確認したら「3D を生成」を押してください。');
 }
@@ -68,8 +70,9 @@ async function loadResult(job) {
   loadingJob = job.id;
   try {
     if (!job.artifacts.includes('model.glb') || !job.artifacts.includes('inspection.json')) throw Error('結果ファイルが揃っていません。');
-    const [inspection, response] = await Promise.all([
+    const [inspection, settings, response] = await Promise.all([
       api(`/api/jobs/${job.id}/artifacts/inspection.json`),
+      api(`/api/jobs/${job.id}/artifacts/settings.json`),
       fetch(`/api/jobs/${job.id}/artifacts/model.glb`)
     ]);
     if (!response.ok) throw Error('GLB を読み込めませんでした。');
@@ -84,7 +87,12 @@ async function loadResult(job) {
     const manual = job.review;
     const manualText = manual?.sha256 === actualHash && ['pass', 'fail', 'review'].includes(manual.decision)
       ? '。人の確認: ' + (labels[manual.decision] || '未確認') : '';
-    message(`形式検査: ${status(inspection.format)}。形状: ${status(inspection.geometry)}。見た目: ${status(inspection.appearance)}${manualText}。ドラッグで全方向を確認してください。`);
+    const finishes = {'standing-figure': '立ち姿の輪郭から造形・塗装しました。', 'wheeled-vehicle': '車輪と窓の位置から車体を造形しました。', 'inferred-mesh': '対象別の特徴を確認できなかったため、TripoSRの推定結果を表示します。'};
+    const selectedPose = settings.source_selection?.detected_count ? `全${settings.source_selection.detected_count}個の候補から上段の中央に近い1個を選びました。` : '';
+    const pose = document.querySelector('#pose-preview');
+    pose.hidden = !selectedPose || !job.artifacts.includes('input-processed.png');
+    if (!pose.hidden) pose.querySelector('img').src = `/api/jobs/${job.id}/artifacts/input-processed.png`;
+    message(`${selectedPose}${finishes[settings.finish_profile] || ''}形式検査: ${status(inspection.format)}。形状: ${status(inspection.geometry)}。見た目: ${status(inspection.appearance)}${manualText}。ドラッグで全方向を確認してください。`);
     if (scrollOnResult) { scrollOnResult = false; title.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   } catch (error) { if (jobId === job.id) message(`結果を表示できません: ${error.message}`); }
   finally { if (loadingJob === job.id) loadingJob = ''; }

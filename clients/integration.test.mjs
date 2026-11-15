@@ -7,7 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 const id = "12345678-1234-4123-8123-123456789abc";
 const image = await readFile(
-  new URL("../jobs/real-product/input-processed.png", import.meta.url),
+  new URL("../demo/product-cutout.png", import.meta.url),
 );
 let received;
 const service = http.createServer(async (req, res) => {
@@ -34,10 +34,11 @@ const service = http.createServer(async (req, res) => {
   res.writeHead(404).end();
 });
 await new Promise((resolve, reject) =>
-  service.listen(47631, "127.0.0.1", resolve).on("error", reject),
+  service.listen(0, "127.0.0.1", resolve).on("error", reject),
 );
 const transport = new StdioClientTransport({
   command: process.execPath,
+  env: { ...process.env, STUDIO_PORT: String(service.address().port) },
   args: [
     new URL("./mcp.mjs", import.meta.url).pathname.replace(
       /^\/(?=[A-Za-z]:)/,
