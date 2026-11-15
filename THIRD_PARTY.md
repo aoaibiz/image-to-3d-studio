@@ -6,6 +6,8 @@ Inventory checked 2026-11-15 against the repository's setup and dependency decla
 
 The optional local photograph reader downloads Qwen3-VL-2B-Instruct (Apache-2.0) and a pinned llama.cpp build (MIT). The ChatGPT observation and paint modes use the operator's Codex session and service terms. Model weights, account credentials, and service allowances are obtained separately by each operator. [Photo reader revisions and licenses](engine/VISUAL_BRIEF.md)
 
+The optional Stable Fast 3D route sends the foreground to Stability AI's official Hugging Face Space. This repository distributes its own client. Stability AI provides the remote model under the Stability AI Community License, with conditions on commercial use. Each operator uses their own service allowance and checks the terms for their use of generated assets. [Model card](https://huggingface.co/stabilityai/stable-fast-3d) · [Upstream license](https://github.com/Stability-AI/stable-fast-3d/blob/main/LICENSE.md) · [Transfer and provider protocol](engine/SF3D.md)
+
 ## Engine and model assets
 
 - [TripoSR code](https://github.com/VAST-AI-Research/TripoSR/tree/107cefdc244c39106fa830359024f6a2f1c78871): setup checks out commit `107cefdc244c39106fa830359024f6a2f1c78871`. Upstream [license](https://github.com/VAST-AI-Research/TripoSR/blob/107cefdc244c39106fa830359024f6a2f1c78871/LICENSE) is MIT. Preserve its copyright and license notice on redistribution.
