@@ -386,16 +386,79 @@ def _claim_artifact(work, receipt):
     return {"sheet": path, "provenance": receipt}
 
 
-def _existing(work, input_hash, prompt_sha):
+# df946d9 sent separate normalized RGBA PNGs in guide, photograph order.
+_LEGACY_PROMPT_SHA = "7336850e18be2f50e20ddfdc24817afb5ed75573c9b111789905976b77dcc896"
+
+
+def _input_digest(geometry, prompt_sha, brief_sha=None):
+    identity = [geometry[k] for k in ("photo_sha", "guide_sha", "model_sha")] + [
+        prompt_sha
+    ]
+    if brief_sha is not None:
+        identity.append(brief_sha)
+    return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
+
+def _verify_saved_request(receipt, geometry, guide, source):
+    """All supported receipt recipes are read-only. Verify the exact historical upload bytes."""
+    expected = {
+        "provider": PROVIDER,
+        "recipient": "OpenAI",
+        "api_key_route": False,
+        "photo_sha256": geometry["photo_sha"],
+        "guide_sha256": geometry["guide_sha"],
+        "geometry_sha256": geometry["model_sha"],
+        "cameras": geometry["camera"],
+    }
+    if not isinstance(receipt, dict) or any(
+        receipt.get(k) != v for k, v in expected.items()
+    ):
+        return False
+    if receipt.get("state") in {"completed", "copy_pending"} and (
+        not _validated_uuid(receipt.get("thread_id")) or receipt.get("returncode") != 0
+    ):
+        return False
+
+    def matches(prompt_sha, brief_sha):
+        return (
+            receipt.get("prompt_sha256") == prompt_sha
+            and receipt.get("visual_brief_sha256") == brief_sha
+            and receipt.get("input_sha256")
+            == _input_digest(geometry, prompt_sha, brief_sha)
+        )
+
+    order = receipt.get("uploaded_attachment_order")
+    if order == ["geometry", "photograph"]:
+        if "visual_brief" in geometry or not matches(_LEGACY_PROMPT_SHA, None):
+            return False
+        hashes = []
+        for original in (guide, source):
+            stream = io.BytesIO()
+            _normalized(original).save(stream, format="PNG")
+            hashes.append(hashlib.sha256(stream.getbuffer()).hexdigest())
+        return hashes == receipt.get("uploaded_png_sha256")
+    if order != ["reference_board"]:
+        return False
+    for render in (appearance_prompt, legacy_appearance_prompt):
+        try:
+            text, brief_sha = render(PROMPT, geometry, geometry["photo_sha"])
+        except TurnaroundProviderError:
+            continue
+        if matches(hashlib.sha256(text.encode("utf8")).hexdigest(), brief_sha):
+            stream = io.BytesIO()
+            board = _reference_board(source, guide, stream)
+            return board == receipt.get("reference_board") and [
+                hashlib.sha256(stream.getbuffer()).hexdigest()
+            ] == receipt.get("uploaded_png_sha256")
+    return False
+
+
+def _existing(work, geometry, guide, source):
     try:
         receipt = json.loads(_bytes(work / "receipt.json", 32_768))
     except (OSError, ValueError, TurnaroundProviderError) as exc:
         raise TurnaroundProviderError(_AMBIGUOUS) from exc
-    if (
-        not isinstance(receipt, dict)
-        or receipt.get("input_sha256") != input_hash
-        or receipt.get("prompt_sha256") != prompt_sha
-    ):
+    if not _verify_saved_request(receipt, geometry, guide, source):
         raise TurnaroundProviderError("既存ジョブの入力または設定が一致しません。")
     if receipt.get("state") == "completed":
         path = work / "sheet.png"
@@ -469,14 +532,73 @@ def _require_consent(setup):
         )
 
 
+def _structure_directions(evidence):
+    directions = []
+    structures = [
+        f"{item['kind'].replace('_', ' ')} at {item['location'].replace('_', ' ')}"
+        for item in evidence["visible_structures"]
+        if item["kind"] != "other"
+    ]
+    if structures:
+        directions.append(
+            "Structures on the photographed face: " + "; ".join(structures) + "."
+        )
+    directions.append(
+        "For the left view at +130 degrees and the right view at -148 degrees from the source, "
+        "evaluate visibility separately. A structure on the source-facing surface can show only "
+        "where the guide reveals it from that camera. Hide the far assembly behind the nearer "
+        "body or rim. Keep any exposed side edge on its guide pixels. Never paint a second "
+        "assembly, port or opening on the back."
+    )
+    surround = evidence["visible_surround"]
+    if surround["color"] != "uncertain":
+        directions.append(
+            f"The body immediately surrounding the observed detail is {surround['color']}."
+        )
+    if surround["pigment_layout"] != "uncertain":
+        directions.append(
+            "The surrounding body shows "
+            + surround["pigment_layout"].replace("_", " ")
+            + " pigment. Use this appearance where the same body surface continues into view."
+        )
+    return directions
+
+
 def appearance_prompt(base_prompt, manifest, photo_sha):
     """Bind optional photo-only observations to the two inferred views before submission."""
+    return _appearance_prompt(base_prompt, manifest, photo_sha, replay_906ad8=False)
+
+
+def legacy_appearance_prompt(base_prompt, manifest, photo_sha):
+    """Reconstruct a historical 906ad8 prompt for sealed receipt verification only."""
+    return _appearance_prompt(base_prompt, manifest, photo_sha, replay_906ad8=True)
+
+
+def _appearance_prompt(base_prompt, manifest, photo_sha, *, replay_906ad8):
     if "visual_brief" not in manifest:
         return base_prompt, None
     try:
         from engine.visual_brief import validate_provider_observations
 
-        evidence = validate_provider_observations(manifest["visual_brief"], photo_sha)
+        payload = manifest["visual_brief"]
+        extended = {"visible_structures", "visible_surround"}
+        old_shape = (
+            replay_906ad8 and isinstance(payload, dict) and extended.isdisjoint(payload)
+        )
+        if old_shape:
+            # The validator verifies all shared fields and rejects foreign keys.
+            payload = {
+                **payload,
+                "visible_structures": [],
+                "visible_surround": {
+                    "color": "uncertain",
+                    "pigment_layout": "uncertain",
+                },
+            }
+        evidence = validate_provider_observations(payload, photo_sha)
+        if old_shape:
+            for key in extended:
+                del evidence[key]
     except (ImportError, KeyError, TypeError, ValueError) as exc:
         raise TurnaroundProviderError(
             "元写真と一致する外観分析の記録を確認できません。"
@@ -497,18 +619,30 @@ def appearance_prompt(base_prompt, manifest, photo_sha):
             "parts or add holes. Neither of these hidden surfaces has been observed."
         ),
     ]
+    if not replay_906ad8:
+        directions.extend(_structure_directions(evidence))
     cues = evidence["observed_face_cues"]
     if "focal" in cues:
         focal = cues["focal"]
+        family = (
+            ""
+            if not replay_906ad8 and focal["family"] == "other"
+            else focal["family"] + " "
+        )
         directions.append(
-            f"The photographed face has one focal {focal['family']} mark at {focal['location']}. "
+            f"The photographed face has one focal {family}mark at {focal['location']}. "
             "Keep this unique mark on the photographed face. Do not reproduce it on the "
             "rear or opposite surface; preserve any part physically visible at those cameras."
         )
     if "repeated" in cues:
         repeated = cues["repeated"]
+        family = (
+            ""
+            if not replay_906ad8 and repeated["family"] == "other"
+            else repeated["family"] + " "
+        )
         directions.append(
-            f"The photographed face has repeated {repeated['family']} decoration at "
+            f"The photographed face has repeated {family}decoration at "
             f"{repeated['location']}. On both hidden surfaces, infer a continuation only where "
             "the material and border continue; follow the observed scale, spacing and palette. "
             "Do not invent a second focal image, duplicate text or mirror a logo."
@@ -551,15 +685,12 @@ def generate_guided_paint(input_path, guide_path, manifest_path, job_dir, *, set
         raise TurnaroundProviderError(
             "2方向の形状ガイドは1536×768のPNGで指定してください。"
         ) from exc
-    prompt, brief_sha = appearance_prompt(PROMPT, geometry, photo_sha)
-    prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    identity = [photo_sha, guide_sha, geometry["model_sha"], prompt_sha]
-    if brief_sha is not None:
-        identity.append(brief_sha)
-    input_hash = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
     work = _checked(Path(job_dir) / "guided-paint")
     if work.exists():
-        return _existing(work, input_hash, prompt_sha)
+        return _existing(work, geometry, guide, source)
+    prompt, brief_sha = appearance_prompt(PROMPT, geometry, photo_sha)
+    prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    input_hash = _input_digest(geometry, prompt_sha, brief_sha)
     diag = preflight()
     if not diag["available"]:
         raise TurnaroundProviderError(diag["reason"])
@@ -570,7 +701,7 @@ def generate_guided_paint(input_path, guide_path, manifest_path, job_dir, *, set
         try:
             work.mkdir(mode=0o700, parents=True, exist_ok=False)
         except FileExistsError:
-            return _existing(work, input_hash, prompt_sha)
+            return _existing(work, geometry, guide, source)
         receipt = {
             "provider": PROVIDER,
             "cli_version": diag["cli_version"],

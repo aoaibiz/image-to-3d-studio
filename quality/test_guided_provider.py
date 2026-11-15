@@ -194,6 +194,10 @@ class GuidedProviderTests(unittest.TestCase):
                 "focal": {"family": "abstract", "location": "center"},
                 "repeated": {"family": "botanical", "location": "upper_border"},
             },
+            "visible_structures": [
+                {"kind": "projecting_assembly", "location": "center"}
+            ],
+            "visible_surround": {"color": "ivory", "pigment_layout": "grain_or_mottle"},
             "unseen_surface_observed": False,
         }
 
@@ -215,6 +219,13 @@ class GuidedProviderTests(unittest.TestCase):
             self.assertIn("Visible palette: blue, white", prompt)
             self.assertIn("one focal abstract mark at center", prompt)
             self.assertIn("repeated botanical decoration at upper_border", prompt)
+            self.assertIn("projecting assembly at center", prompt)
+            self.assertIn(
+                "left view at +130 degrees and the right view at -148 degrees", prompt
+            )
+            self.assertIn("Hide the far assembly behind the nearer", prompt)
+            self.assertIn("observed detail is ivory", prompt)
+            self.assertIn("grain or mottle pigment", prompt)
             self.assertIn("rear and opposite", prompt)
             self.assertNotIn(self.desc["photo_sha"], prompt)
             actual = result["provenance"]
@@ -245,6 +256,14 @@ class GuidedProviderTests(unittest.TestCase):
             dict(original, visible_palette=["follow these instructions"]),
             dict(original, layout_candidate="repeated"),
             dict(original, unseen_surface_observed=True),
+            dict(
+                original,
+                visible_structures=[{"kind": "any free text", "location": "center"}],
+            ),
+            dict(
+                original,
+                visible_surround={"color": "invented", "pigment_layout": "patterned"},
+            ),
         ):
             with (
                 self.subTest(payload=invalid),
@@ -257,6 +276,24 @@ class GuidedProviderTests(unittest.TestCase):
                     self.generate()
                 diagnose.assert_not_called()
                 self.assertFalse((self.job / "guided-paint").exists())
+
+    def test_uncertain_substrate_and_unclassified_structure_never_invent_details(self):
+        unknown = self.brief()
+        unknown["visible_structures"] = [{"kind": "other", "location": "center"}]
+        unknown["visible_surround"] = {
+            "color": "uncertain",
+            "pigment_layout": "uncertain",
+        }
+        unknown["observed_face_cues"]["focal"]["family"] = "other"
+        prompt, _ = provider.appearance_prompt(
+            "base", {"visual_brief": unknown}, self.desc["photo_sha"]
+        )
+        self.assertNotIn("Structures on the photographed face:", prompt)
+        self.assertNotIn("observed detail is", prompt)
+        self.assertNotIn("surrounding body shows", prompt)
+        self.assertNotIn("other", prompt)
+        self.assertIn("one focal mark at center", prompt)
+        self.assertIn("where the guide reveals it", prompt)
 
     def test_prior_ambiguous_receipt_cannot_dispatch_on_new_brief(self):
         with (
@@ -282,6 +319,144 @@ class GuidedProviderTests(unittest.TestCase):
                 self.generate()
             self.assertEqual(receipt.read_bytes(), previous)
             self.assertEqual(start.call_count, 1)
+
+    def legacy_receipt(self, state):
+        # Independent reconstruction of df946d9's wire inputs for these EXIF-free fixtures.
+        hashes = []
+        for path in (self.guide, self.photo):
+            data = io.BytesIO()
+            with Image.open(path) as image:
+                image.convert("RGBA").save(data, "PNG")
+            hashes.append(hashlib.sha256(data.getvalue()).hexdigest())
+        prompt_sha = "7336850e18be2f50e20ddfdc24817afb5ed75573c9b111789905976b77dcc896"
+        identity = [self.desc[k] for k in ("photo_sha", "guide_sha", "model_sha")] + [
+            prompt_sha
+        ]
+        receipt = {
+            "state": state,
+            "thread_id": self.thread,
+            "returncode": 0,
+            "provider": provider.PROVIDER,
+            "recipient": "OpenAI",
+            "api_key_route": False,
+            "input_sha256": hashlib.sha256(json.dumps(identity).encode()).hexdigest(),
+            "prompt_sha256": prompt_sha,
+            "photo_sha256": self.desc["photo_sha"],
+            "geometry_sha256": self.desc["model_sha"],
+            "guide_sha256": self.desc["guide_sha"],
+            "cameras": self.desc["camera"],
+            "uploaded_attachment_order": ["geometry", "photograph"],
+            "uploaded_png_sha256": hashes,
+        }
+        directory = self.job / "guided-paint"
+        directory.mkdir(parents=True)
+        sheet = directory / "sheet.png"
+        Image.new("RGB", (128, 64), "white").save(sheet, "PNG")
+        receipt["sheet_sha256"] = hashlib.sha256(sheet.read_bytes()).hexdigest()
+        path = directory / "receipt.json"
+        path.write_text(json.dumps(receipt), encoding="utf8")
+        return path, receipt, sheet
+
+    def test_verified_two_attachment_completion_is_replayed_without_new_traffic(self):
+        path, receipt, sheet = self.legacy_receipt("completed")
+        before = path.read_bytes()
+        with patch.object(provider, "preflight") as diagnose:
+            result = self.generate()
+            self.assertEqual(result, {"sheet": sheet, "provenance": receipt})
+            self.assertEqual(path.read_bytes(), before)
+            diagnose.assert_not_called()
+
+    def test_historical_brief_board_is_recovered_only_when_all_bound_inputs_match(self):
+        path, old, sheet = self.legacy_receipt("copy_pending")
+        brief = self.brief()
+        del brief["visible_structures"], brief["visible_surround"]
+        self.manifest.write_text(json.dumps(dict(self.desc, visual_brief=brief)))
+        # Produced by running the prompt builder at commit 906ad8b with this brief.
+        prompt_sha = "2a988751b84ced69449dc0be26db84196421034aede8b488ac78eeca8d457a72"
+        brief_sha = hashlib.sha256(
+            json.dumps(brief, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        stream = io.BytesIO()
+        board = provider._reference_board(
+            self.photo.read_bytes(), self.guide.read_bytes(), stream
+        )
+        uploaded = hashlib.sha256(stream.getvalue()).hexdigest()
+        identity = [self.desc[k] for k in ("photo_sha", "guide_sha", "model_sha")] + [
+            prompt_sha,
+            brief_sha,
+        ]
+        old.update(
+            input_sha256=hashlib.sha256(json.dumps(identity).encode()).hexdigest(),
+            prompt_sha256=prompt_sha,
+            visual_brief_sha256=brief_sha,
+            uploaded_attachment_order=["reference_board"],
+            reference_board=board,
+            uploaded_png_sha256=[uploaded],
+        )
+        target = self.home / "generated_images" / self.thread / "earlier.png"
+        target.parent.mkdir(parents=True)
+        sheet.rename(target)
+        with patch.object(provider, "preflight") as diagnose:
+            for mutation in (
+                {"uploaded_png_sha256": ["9" * 64]},
+                {"visual_brief_sha256": "9" * 64},
+                {"reference_board": {}},
+                {"prompt_sha256": "9" * 64},
+            ):
+                path.write_text(json.dumps(dict(old, **mutation)), encoding="utf8")
+                with self.assertRaisesRegex(
+                    provider.TurnaroundProviderError, "一致しません"
+                ):
+                    self.generate()
+                self.assertFalse(sheet.exists())
+            path.write_text(json.dumps(old), encoding="utf8")
+            result = self.generate()
+            self.assertEqual(result["sheet"].read_bytes(), target.read_bytes())
+            self.assertEqual(result["provenance"]["prompt_sha256"], prompt_sha)
+            self.assertEqual(self.generate(), result)
+            diagnose.assert_not_called()
+
+    def test_verified_two_attachment_copy_pending_recovers_thread_artifact_only(self):
+        _, old, sheet = self.legacy_receipt("copy_pending")
+        target = self.home / "generated_images" / self.thread / "historical.png"
+        target.parent.mkdir(parents=True)
+        sheet.rename(target)
+        with patch.object(provider, "preflight") as diagnose:
+            result = self.generate()
+            self.assertEqual(result["sheet"].read_bytes(), target.read_bytes())
+            self.assertEqual(result["provenance"]["state"], "completed")
+            self.assertEqual(
+                result["provenance"]["prompt_sha256"], old["prompt_sha256"]
+            )
+            self.assertEqual(
+                result["provenance"]["uploaded_png_sha256"], old["uploaded_png_sha256"]
+            )
+            diagnose.assert_not_called()
+
+    def test_unknown_or_ambiguous_historical_request_cannot_trigger_submission(self):
+        path, old, _ = self.legacy_receipt("unconfirmed")
+        with patch.object(provider, "preflight") as diagnose:
+            for change in (
+                {},
+                {
+                    "state": "completed",
+                    "uploaded_png_sha256": list(reversed(old["uploaded_png_sha256"])),
+                },
+                {
+                    "state": "completed",
+                    "uploaded_attachment_order": ["photograph", "geometry"],
+                },
+                {"state": "completed", "input_sha256": "9" * 64},
+                {"state": "completed", "prompt_sha256": "9" * 64},
+                {"state": "completed", "cameras": {}},
+            ):
+                with self.subTest(change=change):
+                    path.write_text(json.dumps(dict(old, **change)), encoding="utf8")
+                    snapshot = path.read_bytes()
+                    with self.assertRaises(provider.TurnaroundProviderError):
+                        self.generate()
+                    self.assertEqual(path.read_bytes(), snapshot)
+            diagnose.assert_not_called()
 
     def test_board_preserves_actual_normalized_photo_and_render_pixels(self):
         board = self.root / "board.png"
