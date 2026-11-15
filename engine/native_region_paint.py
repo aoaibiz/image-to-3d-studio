@@ -666,8 +666,10 @@ def paint_native_region(
     orientation,
     output_dir,
 ):
-    """Recover a limited appearance proposal only after full-sheet registration has failed.
+    """Paint a verified region while retaining native PBR everywhere else.
 
+    Callers may prefer this path for a supported native material or use it when
+    full-sheet registration fails. Both cases apply the same regional checks.
     Arguments registration, layout, receipt and orientation are the job's sealed
     records. A result is still hypothetical and needs visual review. A veto writes
     no output directory. Callers must retain the native source as a separate master.
