@@ -196,6 +196,10 @@ NATIVE_ARTIFACTS = {
     "native-inspection.png",
     "native-material.json",
 }
+CONTINUITY_ARTIFACTS = NATIVE_ARTIFACTS | {
+    "continuity-native.glb",
+    "continuity-paint.json",
+}
 
 
 def _appearance_mode(observations, submitted, *, full_supported=False):
@@ -247,6 +251,28 @@ def _appearance_mode(observations, submitted, *, full_supported=False):
     return "native_material"
 
 
+def _existing_paint_attempt(work):
+    # A provider-owned directory without its receipt is also indeterminate.
+    fence = work / "paint-attempt.json"
+    request = work / "appearance/guided-paint"
+    if request.exists() or request.is_symlink():
+        if request.is_symlink() or not (request / "receipt.json").is_file():
+            raise StageError(
+                "sf3d_pending",
+                "元の推定塗装の受付を確認できません。再送を停止しました。",
+            )
+        return True
+    return fence.is_file() and files.read_json(fence).get("state") != "local_preflight"
+
+
+def _local_paint_method(observations, mode, submitted):
+    if submitted or mode not in {"guided_region", "native_material"}:
+        return None
+    from engine.continuity_paint import eligible, paint_continuity
+
+    return paint_continuity if eligible(observations) else None
+
+
 def _render_native(mesh, texture, basis, mask, lens=None):
     """Render the delivered mesh's actual embedded diffuse and untextured normals on its camera rays."""
     import numpy as np
@@ -274,7 +300,7 @@ def _render_native(mesh, texture, basis, mask, lens=None):
     return diffuse, clay, ids
 
 
-def _native_inspection(base, reg, observations, report_dir):
+def _native_inspection(base, reg, observations, report_dir, mode="native_material"):
     import cv2
     import numpy as np
     from PIL import Image
@@ -397,8 +423,12 @@ def _native_inspection(base, reg, observations, report_dir):
     report = {
         "decision": "source_diffuse_disagreement"
         if colour_hold
-        else "no additional pigment evidenced; inspect native material",
-        "mode": "native_material",
+        else (
+            "observed surface continuation; inspect inferred paint"
+            if mode == "local_continuity"
+            else "no additional pigment evidenced; inspect native material"
+        ),
+        "mode": mode,
         "source_sha256": observations["source_sha256"],
         "model_sha256": footprint["sha256"],
         "inspection_sha256": files.digest(report_dir / "native-inspection.png"),
@@ -802,15 +832,54 @@ def _publish(stage, out, names, source_sha, *, source=None, shape_editor=None):
 
 
 def _native_finish(
-    out, source, base, original, reg, observations, observation, shape_editor=None
+    out,
+    source,
+    base,
+    original,
+    reg,
+    observations,
+    observation,
+    shape_editor=None,
+    *,
+    continue_surface=None,
 ):
+    from engine.finish_export import embed_master
+    from engine.sf3d_provider import native_glb
+    from engine.sf3d_shape_job import oriented_glb
+
     work = out / "sf3d-observed-work"
-    _native_inspection(base, reg, observations, work)
-    with tempfile.TemporaryDirectory(dir=out) as tmp:
+    mode = "local_continuity" if continue_surface else "native_material"
+    required = CONTINUITY_ARTIFACTS if continue_surface else NATIVE_ARTIFACTS
+    with tempfile.TemporaryDirectory(dir=work) as tmp:
         stage = Path(tmp)
-        for name in ("model.glb", "editable.gltf", "input-processed.png"):
-            shutil.copyfile(base / name, stage / name)
+        shutil.copyfile(base / "input-processed.png", stage / "input-processed.png")
         shutil.copyfile(base / "provider-native.glb", stage / "shape-master.glb")
+        if continue_surface:
+            result_dir = stage / "continuation"
+            result_dir.mkdir()
+            evidence = continue_surface(
+                base / "provider-native.glb",
+                source,
+                base / "input-processed.png",
+                reg,
+                observations,
+                result_dir,
+            )
+            if evidence is None:
+                return None
+            if evidence != files.read_json(result_dir / "continuity-paint.json"):
+                raise ValueError("推定塗装の検品結果と保存記録が一致しません。")
+            os.replace(result_dir / "model.glb", stage / "continuity-native.glb")
+            os.replace(
+                result_dir / "continuity-paint.json", stage / "continuity-paint.json"
+            )
+            oriented_glb(stage / "continuity-native.glb", stage / "model.glb")
+            embed_master(stage / "model.glb", stage / "editable.gltf")
+        else:
+            for name in ("model.glb", "editable.gltf"):
+                shutil.copyfile(base / name, stage / name)
+        artifact = native_glb(stage / "model.glb")
+        _native_inspection(stage, reg, observations, work, mode)
         for name in ("native-inspection.png", "native-material.json"):
             shutil.copyfile(work / name, stage / name)
         hist = {
@@ -825,27 +894,30 @@ def _native_finish(
             "external_photo_observations": 1,
             "external_image_generations": 0,
             "unseen_surface_observed": False,
-            "display_glb_sha256": original["glb_sha256"],
+            "display_glb_sha256": artifact["sha256"],
         }
         files.atomic_json(stage / "generation.json", hist)
         meta = {
             **original,
             "pipeline": PIPELINE,
-            "appearance_mode": "native_material",
-            "engine": "Stable Fast 3D + ChatGPT observed native material",
+            "appearance_mode": mode,
+            "engine": (
+                "Stable Fast 3D + observed local surface continuity"
+                if continue_surface
+                else "Stable Fast 3D + ChatGPT observed native material"
+            ),
+            "glb_sha256": artifact["sha256"],
             "geometry_master": "shape-master.glb",
             "visual_quality": "needs_review",
             "texture_size": 1024,
             "photo_observer": observation["method"],
-            "artifact_sha256": {
-                n: files.digest(stage / n) for n in sorted(NATIVE_ARTIFACTS)
-            },
+            "artifact_sha256": {n: files.digest(stage / n) for n in sorted(required)},
         }
         files.atomic_json(stage / "settings.json", meta)
         _publish(
             stage,
             out,
-            NATIVE_ARTIFACTS,
+            required,
             hist["source_sha256"],
             source=source,
             shape_editor=shape_editor,
@@ -858,9 +930,11 @@ def _validate_result(out, source_sha):
 
     meta = files.read_json(out / "settings.json")
     hashes = meta["artifact_sha256"]
-    native = meta.get("appearance_mode") == "native_material"
+    local = meta.get("appearance_mode") == "local_continuity"
+    native = meta.get("appearance_mode") == "native_material" or local
     modes = {
         "native_material": NATIVE_ARTIFACTS,
+        "local_continuity": CONTINUITY_ARTIFACTS,
         "guided_region": ARTIFACTS,
         "guided_full": FULL_ARTIFACTS,
     }
@@ -925,16 +999,46 @@ def _validate_result(out, source_sha):
         review = files.read_json(out / "native-material.json")
         if (
             gen["source_sha256"] != source_sha
+            or gen["display_glb_sha256"] != meta["glb_sha256"]
             or gen["external_image_generations"] != 0
             or review["source_sha256"] != source_sha
             or review["model_sha256"] != paint_sha
             or review["inspection_sha256"] != hashes["native-inspection.png"]
-            or gen["shape"]["output_sha256"] != paint_sha
+            or not local
+            and gen["shape"]["output_sha256"] != paint_sha
             or gen["shape"]["native_sha256"] != hashes["shape-master.glb"]
             or gen["shape"]["camera"] != meta["camera"]
             or review["hold_projection"] is not False
         ):
             raise ValueError("元の形状・観察・無追加塗装の検品証跡が一致しません。")
+        if local:
+            evidence = files.read_json(out / "continuity-paint.json")
+            if (
+                evidence["source_glb"] != hashes["shape-master.glb"]
+                or evidence["output_glb"] != hashes["continuity-native.glb"]
+                or evidence["source_glb"] == evidence["output_glb"]
+                or evidence["source_image_sha256"] != source_sha
+                or evidence["foreground_sha256"] != hashes["input-processed.png"]
+                or evidence["visual_brief_sha256"] != json_sha(gen["visual_brief"])
+                or evidence["locked_changed"] != 0
+                or evidence["unsupported_surface_changed"] != 0
+                or evidence["changed_uv"] <= 0
+                or evidence["observed_texels"] <= 0
+                or evidence["source_rear_observed"] is not False
+                or evidence["appearance"] != "needs_review"
+                or evidence[
+                    "normals_uv_nodes_material_and_all_other_buffers_bitwise_identical"
+                ]
+                is not True
+                or review["mode"] != "local_continuity"
+                or gen["photo_observation"].get("source_sha256") != source_sha
+                or gen["external_shape_generations"] != 1
+                or gen["external_photo_observations"] != 1
+                or gen["unseen_surface_observed"] is not False
+            ):
+                raise ValueError(
+                    "可視面の保護・観察・連続模様の推定結果を照合できません。"
+                )
         return meta
     record_name = (
         "full-paint.json" if meta["appearance_mode"] == "guided_full" else "region.json"
@@ -1386,16 +1490,14 @@ def run(
             matte = base / "input-processed.png"
             enter("registration")
             reg = _registration(native, matte, work)
-            fence = work / "paint-attempt.json"
-            submitted = (account / "guided-paint/receipt.json").is_file() or (
-                fence.is_file()
-                and files.read_json(fence).get("state") != "local_preflight"
-            )
+            submitted = _existing_paint_attempt(work)
             stage = "observation"
             mode = _appearance_mode(observations, submitted, full_supported=True)
-            if mode == "native_material":
+            local_apply = _local_paint_method(observations, mode, submitted)
+            meta = None
+            if mode == "native_material" or local_apply is not None:
                 enter("native_inspection")
-                meta = _native_finish(
+                args = (
                     out,
                     source,
                     base,
@@ -1405,6 +1507,10 @@ def run(
                     observation,
                     shape_editor,
                 )
+                meta = _native_finish(*args, continue_surface=local_apply)
+                if meta is None and mode == "native_material":
+                    meta = _native_finish(*args)
+            if meta is not None:
                 files.atomic_json(
                     state,
                     {

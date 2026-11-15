@@ -26,6 +26,55 @@ def observed(*, cues=None, structures=None, reverse="continuous_substrate"):
 
 
 class DecisionTests(unittest.TestCase):
+    def test_local_finish_never_replaces_an_existing_or_lost_paint_receipt(self):
+        source = observed(cues={"repeated": {"family": "geometric"}})
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            self.assertFalse(job._existing_paint_attempt(work))
+            files.atomic_json(work / "paint-attempt.json", {"state": "local_preflight"})
+            self.assertFalse(job._existing_paint_attempt(work))
+            files.atomic_json(work / "paint-attempt.json", {"state": "pending"})
+            self.assertTrue(job._existing_paint_attempt(work))
+            self.assertIsNone(job._local_paint_method(source, "guided_region", True))
+            (work / "paint-attempt.json").unlink()
+            (work / "appearance/guided-paint").mkdir(parents=True)
+            with self.assertRaises(job.StageError) as pending:
+                job._existing_paint_attempt(work)
+            self.assertEqual(pending.exception.code, "sf3d_pending")
+            files.atomic_json(
+                work / "appearance/guided-paint/receipt.json", {"state": "submitted"}
+            )
+            self.assertTrue(job._existing_paint_attempt(work))
+            self.assertIsNone(job._local_paint_method(source, "inferred_paint", False))
+
+    def test_inconclusive_local_measurement_leaves_no_model_or_external_attempt(self):
+        from quality.test_sf3d_provider import fixture_glb, png
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            base = out / "sf3d-observed-work/native"
+            base.mkdir(parents=True)
+            (base / "input-processed.png").write_bytes(png())
+            (base / "provider-native.glb").write_bytes(fixture_glb())
+
+            def no_period(native, source, matte, reg, brief, stage):
+                (stage / "partial").write_bytes(b"unusable local fit")
+
+            result = job._native_finish(
+                out,
+                base / "input-processed.png",
+                base,
+                {},
+                {},
+                {},
+                {},
+                continue_surface=no_period,
+            )
+            self.assertIsNone(result)
+            self.assertFalse((out / "model.glb").exists())
+            self.assertFalse(job._existing_paint_attempt(base.parent))
+            self.assertEqual(list(base.parent.iterdir()), [base])
+
     def test_native_or_guided_requires_bound_observation(self):
         self.assertEqual(job._appearance_mode(observed(), False), "native_material")
         self.assertEqual(
@@ -563,6 +612,73 @@ class OptionalShapeTests(unittest.TestCase):
                         ),
                     )
                 self.assertFalse((stage / "shape-hypothesis.json").exists())
+
+
+@unittest.skipUnless(
+    os.getenv("STUDIO_CONTINUITY_FIXTURE"),
+    "Requires the separately generated analytical surface fixture.",
+)
+class AnalyticSurfaceIntegration(unittest.TestCase):
+    def test_generated_surface_observation_uses_no_paint_request(self):
+        from engine import sf3d_provider, sf3d_shape_job
+
+        fixture = Path(os.environ["STUDIO_CONTINUITY_FIXTURE"])
+        source = fixture / "photo.png"
+        matte = fixture / "foreground.png"
+        native = fixture / "provider-native.glb"
+        obs = files.read_json(fixture / "observation.json")
+        src = files.digest(source)
+        receipt = {
+            "artifact": sf3d_provider.native_glb(native),
+            "source_sha256": src,
+            "foreground_sha256": files.digest(matte),
+            "settings": {
+                "fixture": "analytically generated geometry and source pattern"
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            base = out / "sf3d-observed-work/native"
+            original = sf3d_shape_job.finalize(
+                native,
+                matte,
+                {"source_sha256": src, "selection": "synthetic test"},
+                {"method": "synthetic test"},
+                receipt,
+                base,
+            )
+            method = job._local_paint_method(
+                obs, job._appearance_mode(obs, False, full_supported=True), False
+            )
+            self.assertIsNotNone(method)
+            with patch(
+                "requests.sessions.Session.request",
+                side_effect=AssertionError("remote request"),
+            ):
+                settings = job._native_finish(
+                    out,
+                    source,
+                    base,
+                    original,
+                    files.read_json(fixture / "registration.json"),
+                    obs,
+                    {"method": "synthetic test", "source_sha256": src},
+                    continue_surface=method,
+                )
+            self.assertTrue(job.valid(out, settings))
+            self.assertEqual(settings["appearance_mode"], "local_continuity")
+            self.assertEqual(
+                files.digest(out / "shape-master.glb"), files.digest(native)
+            )
+            self.assertEqual(
+                files.digest(out / "continuity-native.glb"),
+                files.digest(fixture / "finished/model.glb"),
+            )
+            self.assertEqual(
+                files.read_json(out / "generation.json")["external_image_generations"],
+                0,
+            )
+            self.assertFalse(job._existing_paint_attempt(base.parent))
 
 
 @unittest.skipUnless(
