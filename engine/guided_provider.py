@@ -522,18 +522,36 @@ def _reference_board(source, guide, path):
 
 def _require_consent(setup, pipeline="triposg-codex-guided-v1"):
     from engine.pipeline import GUIDED_PIPELINE, OBSERVED_PIPELINES
-    from studio.configure import agreement
+    from studio.configure import valid_agreement
     try:
         actual = json.loads(_bytes(setup, 32768))
     except (ValueError, OSError, TypeError, TurnaroundProviderError):
         actual = None
     if pipeline not in (GUIDED_PIPELINE, *OBSERVED_PIPELINES):
         raise TurnaroundProviderError("このジョブには画像生成の送信契約がありません。")
-    expected = {"pipeline": pipeline, "agreement": agreement(pipeline)}
-    if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
+    if not valid_agreement(actual, pipeline):
         raise TurnaroundProviderError(
             "利用には OpenAI への画像送信と本人の ChatGPT 利用枠への同意が必要です。"
         )
+
+
+def _require_chart_consent(setup, pipeline):
+    from engine.pipeline import SF3D_OBSERVED_PIPELINE
+    from studio.configure import agreement
+    try:
+        actual = json.loads(_bytes(setup,32768))
+    except (OSError,ValueError,TurnaroundProviderError) as exc:
+        raise TurnaroundProviderError("展開図の送信同意を確認できません。") from exc
+    configured = actual.get("agreement",{}) if isinstance(actual,dict) else {}
+    if (
+        pipeline != SF3D_OBSERVED_PIPELINE
+        or not isinstance(configured,dict)
+        or configured.get("schema")!=2
+        or not isinstance(configured.get("appearance"),dict)
+        or configured["appearance"].get("paint_guide_recipes")!=["two-rendered-geometry-views","source-anchored-surface-chart"]
+        or json.dumps(actual,sort_keys=True) != json.dumps({"pipeline":pipeline,"agreement":agreement(pipeline)},sort_keys=True)
+    ):
+        raise TurnaroundProviderError("展開図と元写真をOpenAIに送る設定を初期設定で選択してください。")
 
 
 def _structure_directions(evidence):
@@ -747,104 +765,109 @@ def generate_guided_paint(input_path, guide_path, manifest_path, job_dir, *, set
             "started_unix": time.time(),
         }
         _record(work, receipt)
-        start = time.monotonic()
-        cmd = [
-            _which(),
-            *_flags(),
-            "--image",
-            attachment.name,
-            "--",
-            prompt,
-        ]
-        proc = None
-        timer = None
-        timed_out = threading.Event()
+        return _run_image_once(work, receipt, attachment, prompt, setup, pipeline)
+
+
+def _run_image_once(work, receipt, attachment, prompt, setup, pipeline, *, consent_check=None):
+    """Run the already-journalled single image submission and recover its official artifact."""
+    start = time.monotonic()
+    cmd = [
+        _which(),
+        *_flags(),
+        "--image",
+        attachment.name,
+        "--",
+        prompt,
+    ]
+    proc = None
+    timer = None
+    timed_out = threading.Event()
+    try:
+        # Setup may have changed during preprocessing or the local CLI checks.
         try:
-            # Setup may have changed during preprocessing or the local CLI checks.
-            try:
-                _require_consent(setup, pipeline)
-            except TurnaroundProviderError:
-                receipt.update(state="blocked_before_submission", attempts=0)
-                raise
-            proc = subprocess.Popen(
-                cmd,
-                env=_env(),
-                cwd=isolated,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-            )
+            (consent_check or _require_consent)(setup, pipeline)
+        except TurnaroundProviderError:
+            receipt.update(state="blocked_before_submission", attempts=0)
+            raise
+        proc = subprocess.Popen(
+            cmd,
+            env=_env(),
+            cwd=attachment.parent,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
 
-            def expire():
-                if proc.poll() is None:
-                    timed_out.set()
-                    try:
-                        proc.kill()
-                    except OSError:
-                        pass
+        def expire():
+            if proc.poll() is None:
+                timed_out.set()
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
 
-            timer = threading.Timer(_TURN_TIMEOUT, expire)
-            timer.daemon = True
-            timer.start()
-            ended = False
-            with proc.stdout as events:
-                for line in iter(lambda: events.readline(1_048_577), b""):
-                    if len(line) > 1_048_576:
-                        raise TurnaroundProviderError("Codex 応答が上限を超えました。")
-                    try:
-                        event = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(event, dict):
-                        continue
-                    _notice(event, receipt)
-                    if event.get("type") == "thread.started":
-                        thread = event.get("thread_id")
-                        if (
-                            not _validated_uuid(thread)
-                            or receipt["thread_id"] is not None
-                        ):
-                            raise TurnaroundProviderError(
-                                "Codex の受付番号を検証できません。"
-                            )
-                        receipt["thread_id"] = thread
-                        _record(work, receipt)
-                    elif event.get("type") == "turn.completed":
-                        ended = True
-                    elif event.get("type") == "turn.failed":
+        timer = threading.Timer(_TURN_TIMEOUT, expire)
+        timer.daemon = True
+        timer.start()
+        ended = False
+        with proc.stdout as events:
+            for line in iter(lambda: events.readline(1_048_577), b""):
+                if len(line) > 1_048_576:
+                    raise TurnaroundProviderError("Codex 応答が上限を超えました。")
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                _notice(event, receipt)
+                if event.get("type") == "thread.started":
+                    thread = event.get("thread_id")
+                    if (
+                        not _validated_uuid(thread)
+                        or receipt["thread_id"] is not None
+                    ):
                         raise TurnaroundProviderError(
-                            "Codex が生成失敗を通知しました。利用枠と環境を確認してください。"
+                            "Codex の受付番号を検証できません。"
                         )
-            receipt["returncode"] = proc.wait()
-            if timed_out.is_set():
-                raise TurnaroundProviderError(
-                    "Codexの終了待ちが期限に達しました。再送せずこの受付を保存します。"
-                )
-            if receipt["returncode"] or not ended or receipt["thread_id"] is None:
-                raise TurnaroundProviderError(_AMBIGUOUS)
-            receipt.update(
-                state="copy_pending", elapsed_seconds=round(time.monotonic() - start, 3)
+                    receipt["thread_id"] = thread
+                    _record(work, receipt)
+                elif event.get("type") == "turn.completed":
+                    ended = True
+                elif event.get("type") == "turn.failed":
+                    raise TurnaroundProviderError(
+                        "Codex が生成失敗を通知しました。利用枠と環境を確認してください。"
+                    )
+        receipt["returncode"] = proc.wait()
+        if timed_out.is_set():
+            raise TurnaroundProviderError(
+                "Codexの終了待ちが期限に達しました。再送せずこの受付を保存します。"
             )
-            _record(work, receipt)
-            return _claim_artifact(work, receipt)
-        except (OSError, TurnaroundProviderError, KeyboardInterrupt) as exc:
-            message = (
-                str(exc) if isinstance(exc, TurnaroundProviderError) else _AMBIGUOUS
-            )
-            receipt.update(
-                error=message, elapsed_seconds=round(time.monotonic() - start, 3)
-            )
-            if receipt["state"] not in {
-                "copy_pending",
-                "blocked_before_submission",
-                "rejected_layout",
-            }:
-                receipt["state"] = "unconfirmed"
-            _record(work, receipt)
-            raise TurnaroundProviderError(message) from exc
-        finally:
-            if timer is not None:
-                timer.cancel()
-            if proc is not None and proc.poll() is None:
-                proc.kill()
-                proc.wait()
+        if receipt["returncode"] or not ended or receipt["thread_id"] is None:
+            raise TurnaroundProviderError(_AMBIGUOUS)
+        receipt.update(
+            state="copy_pending", elapsed_seconds=round(time.monotonic() - start, 3)
+        )
+        _record(work, receipt)
+        return _claim_artifact(work, receipt)
+    except (OSError, TurnaroundProviderError, KeyboardInterrupt) as exc:
+        message = (
+            str(exc) if isinstance(exc, TurnaroundProviderError) else _AMBIGUOUS
+        )
+        receipt.update(
+            error=message, elapsed_seconds=round(time.monotonic() - start, 3)
+        )
+        if receipt["state"] not in {
+            "copy_pending",
+            "blocked_before_submission",
+            "rejected_layout",
+        }:
+            receipt["state"] = "unconfirmed"
+        _record(work, receipt)
+        raise TurnaroundProviderError(message) from exc
+    finally:
+        if timer is not None:
+            timer.cancel()
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait()
