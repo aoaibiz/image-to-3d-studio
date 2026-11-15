@@ -150,7 +150,9 @@ async function loadResult(job) {
     const pose = document.querySelector('#pose-preview');
     pose.hidden = !selectedPose || !job.artifacts.includes('input-processed.png');
     if (!pose.hidden) pose.querySelector('img').src = `/api/jobs/${job.id}/artifacts/input-processed.png`;
-    message(`${selectedPose}${shapeNote}形式検査: ${status(inspection.format)}。形状: ${status(inspection.geometry)}。見た目: ${status(inspection.appearance)}${manualText}。ドラッグで全方向を確認してください。`);
+    const mirrorNote = inspection.image_comparison?.opposite_paint?.status === 'review_hold'
+      ? ' 正面の特徴的な柄が背面で鏡写しになっています。背面の塗装を確認してください。' : '';
+    message(`${selectedPose}${shapeNote}形式検査: ${status(inspection.format)}。形状: ${status(inspection.geometry)}。見た目: ${status(inspection.appearance)}${manualText}。ドラッグで全方向を確認してください。${mirrorNote}`);
     if (scrollOnResult) { scrollOnResult = false; title.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   } catch (error) { if (jobId === job.id) message(`結果を表示できません: ${error.message}`); }
   finally { if (loadingJob === job.id) loadingJob = ''; }

@@ -926,6 +926,7 @@ class JobCore:
                             str(source),
                             str(out),
                             digest,
+                            *(["--observed-view", "front"] if shape else []),
                         ],
                         "appearance",
                     )
