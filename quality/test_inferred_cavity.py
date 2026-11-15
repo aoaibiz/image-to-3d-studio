@@ -17,7 +17,7 @@ from engine import inferred_cavity as cavity
 
 OBSERVATION = {
     "function_context": {
-        "interpretation": {"possible_purpose": "contain_or_pass"},
+        "interpretation": {"possible_purpose": "contain_or_pass", "confidence": "low"},
         "observed_cues": [{"kind": "rim_or_frame", "location": "upper_border"}],
     },
     "structures": [],
@@ -97,6 +97,10 @@ class InferredCavityTest(unittest.TestCase):
                 {"kind": kind, "location": "upper_border"}
             )
             self.assertFalse(cavity.eligible(obs), kind)
+        for confidence in ["insufficient", None, "unrecognized"]:
+            observation = copy.deepcopy(OBSERVATION)
+            observation["function_context"]["interpretation"]["confidence"] = confidence
+            self.assertFalse(cavity.eligible(observation))
         self.assertFalse(cavity.eligible({}))
         obs = copy.deepcopy(OBSERVATION)
         obs["function_context"]["interpretation"]["possible_purpose"] = "unknown"

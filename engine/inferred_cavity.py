@@ -22,7 +22,10 @@ class Hold(ValueError):
 
 def eligible(o):
     role = o.get("function_context", {})
-    if role.get("interpretation", {}).get("possible_purpose") != "contain_or_pass":
+    interpretation = role.get("interpretation", {})
+    if interpretation.get("confidence") not in {"low", "moderate"}:
+        return False
+    if interpretation.get("possible_purpose") != "contain_or_pass":
         return False
     items = [*role.get("observed_cues", []), *o.get("structures", [])]
     if not any(
@@ -635,4 +638,3 @@ def editor(*, source, foreground, observation, registration, display_model, outp
         ),
     )
     return result
-
