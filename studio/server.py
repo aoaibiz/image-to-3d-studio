@@ -3,6 +3,7 @@
 import argparse
 import json
 import mimetypes
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import re
@@ -10,7 +11,8 @@ import shutil
 import subprocess
 import sys
 from urllib.parse import urlsplit, parse_qs
-from .core import JobCore, JobError, MAX_INPUT, ROOT, TERMINAL
+from .core import JobCore, JobError, PipelineConflict, MAX_INPUT, ROOT, TERMINAL
+from engine.pipeline import SHAPE_PIPELINE
 
 STATIC = {
     "/": "viewer/index.html",
@@ -36,6 +38,80 @@ class Server(ThreadingHTTPServer):
     def __init__(self, address, core):
         super().__init__(address, Handler)
         self.core = core
+
+
+def shape_doctor(core):
+    from engine.local_shape_job import runtime_path
+    from engine.triposg_cpu import verify_runtime
+    from engine.triposg_setup import PROBE, WEIGHTS
+    from tools.doctor import RUNTIME_PROBE, U2NET_SHA256, local_memory, verify_weight
+
+    checks = {}
+    status = {"engine": "TripoSG", "preflight": "setup_or_verification_required",
+              "weight_verification": "unchecked", "torch_probe": "not_checked"}
+    result = {"ok": False, "pipeline": SHAPE_PIPELINE, "local": True, "checks": checks,
+              "diagnostics": {"ram": local_memory(), "disk_free_bytes": shutil.disk_usage(core.root).free,
+                              "local_cpu": status},
+              "message": "通常のセットアップと engine/setup-triposg.ps1 の実行結果を確認してください。"}
+    try:
+        runtime = runtime_path()
+    except ValueError:
+        result["message"] = "STUDIO_TRIPOSG_RUNTIME には絶対パスを指定してください。"
+        return result
+    base = core.root / ".runtime"
+    python = base / "venv/Scripts/python.exe"
+    shape_python = runtime / "venv/Scripts/python.exe"
+    model_dir = runtime / "weights"
+    foreground = base / "u2net/u2net.onnx"
+    source = runtime / "source/triposg"
+    resources = [model_dir / name for name in WEIGHTS]
+    checks.update(python=python.is_file(), shape_python=shape_python.is_file(),
+                  shape_source=(source / "models/transformers/triposg_transformer.py").is_file(),
+                  model=all(p.is_file() for p in resources), foreground_model=foreground.is_file(),
+                  validator=(base / "validator/gltf_validator.exe").is_file(), node=bool(shutil.which("node")),
+                  viewer=(core.root / "viewer/node_modules/three/build/three.module.js").is_file())
+    if not all(checks.values()):
+        return result
+    # Cache successful multi-GB verification while the local files are unchanged.
+    files = [python, shape_python, foreground, *resources, *sorted(source.rglob("*.py"))]
+    try:
+        signature = tuple((str(p), s.st_size, s.st_mtime_ns) for p in files for s in (p.stat(),))
+    except OSError:
+        return result
+    with core.changed:
+        if getattr(core, "shape_doctor_signature", None) == signature:
+            result["ok"] = True
+            result["diagnostics"]["local_cpu"] = core.shape_doctor_status.copy()
+            result["message"] = "ローカル TripoSG の重み、実行環境、着色ツールを確認しました。"
+            return result
+        if core.active or core.checking:
+            status["preflight"] = "not_checked"
+            result["message"] = "処理中のため診断を保留しました。終了後にもう一度確認してください。"
+            return result
+        core.checking.add("doctor")
+    try:
+        verify_runtime(runtime)
+        status["weight_verification"] = "verified"
+        status["foreground_weight_verification"] = verify_weight(foreground, U2NET_SHA256, True)
+        if status["foreground_weight_verification"] != "verified":
+            return result
+        env = dict(os.environ, HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
+                   HF_HUB_DISABLE_TELEMETRY="1", OMP_NUM_THREADS="1")
+        for cmd in ([str(python), "-I", "-B", "-c", RUNTIME_PROBE],
+                    [str(shape_python), "-I", "-B", "-c", PROBE, str(runtime / "source")]):
+            subprocess.run(cmd, env=env, capture_output=True, check=True, timeout=70)
+        status.update(torch_probe="verified", preflight="ready_to_try")
+        result.update(ok=True, message="ローカル TripoSG の重み、実行環境、着色ツールを確認しました。")
+        with core.changed:
+            core.shape_doctor_signature = signature
+            core.shape_doctor_status = status.copy()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    finally:
+        with core.changed:
+            core.checking.discard("doctor")
+            core.changed.notify_all()
+    return result
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -89,7 +165,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/favicon.ico":
             self.send_bytes(204, b"", "image/x-icon")
             return
+        if path == "/api/engine":
+            self.send_json(200, {"pipeline": self.server.core.pipeline, "local": True})
+            return
         if path == "/api/doctor":
+            if self.server.core.pipeline == SHAPE_PIPELINE:
+                self.send_json(200, shape_doctor(self.server.core))
+                return
             checks = {
                 "python": (ROOT / ".runtime/venv/Scripts/python.exe").is_file(),
                 "model": (ROOT / ".runtime/model/model.ckpt").is_file(),
@@ -177,6 +259,8 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": all(checks.values())
                     and cached.get("local_cpu", {}).get("preflight") == "ready_to_try",
                     "checks": checks,
+                    "pipeline": core.pipeline,
+                    "local": True,
                     "diagnostics": cached,
                     "message": "準備状況を確認しました。未準備の項目はセットアップしてください。",
                 },
@@ -294,7 +378,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/jobs":
                 job, created = self.server.core.create(
-                    data, self.headers.get("Idempotency-Key")
+                    data, self.headers.get("Idempotency-Key"), self.headers.get("X-Studio-Pipeline")
                 )
                 self.send_json(201 if created else 200, {"job": job})
                 return
@@ -316,6 +400,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "見つかりません。"})
         except KeyError:
             self.send_json(404, {"error": "ジョブがありません。"})
+        except PipelineConflict as exc:
+            self.send_json(409, {"error": str(exc)})
         except JobError as exc:
             self.send_json(400, {"error": str(exc)})
 

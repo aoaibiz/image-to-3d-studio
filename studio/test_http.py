@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from studio.core import JobCore
 from studio.server import Server
+from engine.pipeline import PIPELINE, SHAPE_PIPELINE
 
 
 class HttpTests(unittest.TestCase):
@@ -29,6 +30,13 @@ class HttpTests(unittest.TestCase):
                 return response.status, data
 
             try:
+                code, body = request("GET", "/api/engine")
+                self.assertEqual((code, json.loads(body)), (200, {"pipeline": PIPELINE, "local": True}))
+                code, _ = request("POST", "/api/jobs", {
+                    "X-Studio-Client": "1", "X-Studio-Pipeline": SHAPE_PIPELINE, "Idempotency-Key": "stale",
+                }, b"x")
+                self.assertEqual(code, 409)
+                self.assertEqual(core.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 0)
                 self.assertEqual(
                     request("GET", "/api/doctor", {"Host": "evil.example"})[0], 403
                 )
@@ -53,7 +61,7 @@ class HttpTests(unittest.TestCase):
                 code, data = request(
                     "POST",
                     "/api/jobs",
-                    {"X-Studio-Client": "1", "Idempotency-Key": "a"},
+                    {"X-Studio-Client": "1", "X-Studio-Pipeline": PIPELINE, "Idempotency-Key": "a"},
                     b"x",
                 )
                 self.assertEqual(code, 201)
@@ -84,6 +92,24 @@ class HttpTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join()
+                core.close()
+
+    def test_missing_optional_runtime_reports_selected_shape_environment(self):
+        from studio.configure import configure
+        from studio.server import shape_doctor
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            configure(root / "jobs/studio", "triposg")
+            core = JobCore(root, runner=lambda _: None)
+            try:
+                with patch("engine.local_shape_job.runtime_path", return_value=root / "missing"):
+                    result = shape_doctor(core)
+                self.assertEqual(result["pipeline"], SHAPE_PIPELINE)
+                self.assertFalse(result["ok"])
+                self.assertFalse(result["checks"]["shape_python"])
+                self.assertFalse(result["checks"]["model"])
+                self.assertEqual(result["diagnostics"]["local_cpu"]["engine"], "TripoSG")
+            finally:
                 core.close()
 
 

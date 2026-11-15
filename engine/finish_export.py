@@ -177,6 +177,33 @@ def _base_color(material):
     return Image.fromarray(rgba)
 
 
+def world_meshes(scene):
+    """Flatten instances while retaining imported corner shading through chart splits."""
+    meshes = []
+    for node in scene.graph.nodes_geometry:
+        transform, name = scene.graph[node]
+        source = scene.geometry[name]
+        if not isinstance(source, trimesh.Trimesh):
+            raise ValueError("non-mesh scene geometry unsupported")
+        # Trimesh stores imported NORMAL in the mesh cache. Scene.dump() and
+        # ordinary copies discard it, causing lighting seams on UV boundaries.
+        source_normals = np.asarray(source.vertex_normals)
+        instance = source.copy()
+        instance.apply_transform(transform)
+        linear = np.asarray(transform)[:3, :3]
+        try:
+            normals = source_normals @ np.linalg.inv(linear)
+        except np.linalg.LinAlgError:
+            # A collapsed instance has no inverse normal matrix. Its flattened
+            # triangles can only supply geometric normals where area remains.
+            normals = instance.vertex_normals
+        length = np.linalg.norm(normals, axis=1, keepdims=True)
+        instance.vertex_normals = normals / np.maximum(length, 1e-15)
+        instance.metadata.update(name=name, node=node)
+        meshes.append(instance)
+    return meshes
+
+
 def export_finished(scene, stage: Path):
     """Write a scene's final artifacts into an existing or new staging directory.
 
@@ -196,8 +223,7 @@ def export_finished(scene, stage: Path):
         )
     )
     embed_master(stage / "model.glb", stage / "editable.gltf")
-    # Scene.dump applies instance transforms before exporting OBJ and PLY.
-    meshes = scene.dump(concatenate=False)
+    meshes = world_meshes(scene)
     colored = []
     material_maps = {}
     # Write one consistent vertex format for textured and colored meshes. OBJ's
@@ -261,6 +287,8 @@ def export_finished(scene, stage: Path):
                 + " "
                 + " ".join(f"{x / 255:.9g}" for x in c)
             )
+        for normal in mesh.vertex_normals:
+            obj.append("vn " + " ".join(f"{value:.9g}" for value in normal))
         if visual.kind == "texture":
             for uv in visual.uv:
                 obj.append("vt " + " ".join(f"{x:.9g}" for x in uv))
@@ -268,7 +296,7 @@ def export_finished(scene, stage: Path):
                 obj.append(
                     "f "
                     + " ".join(
-                        f"{vertex_offset + int(k) + 1}/{uv_offset + int(k) + 1}"
+                        f"{vertex_offset + int(k) + 1}/{uv_offset + int(k) + 1}/{vertex_offset + int(k) + 1}"
                         for k in face
                     )
                 )
@@ -276,7 +304,11 @@ def export_finished(scene, stage: Path):
         else:
             for face in mesh.faces:
                 obj.append(
-                    "f " + " ".join(str(vertex_offset + int(k) + 1) for k in face)
+                    "f "
+                    + " ".join(
+                        f"{vertex_offset + int(k) + 1}//{vertex_offset + int(k) + 1}"
+                        for k in face
+                    )
                 )
         vertex_offset += len(mesh.vertices)
     (stage / "editable.obj").write_text("\n".join(obj) + "\n", encoding="utf-8")
@@ -295,5 +327,6 @@ def export_finished(scene, stage: Path):
                 "# Vertex-color-only scene; see OBJ vertex colors.\n", encoding="utf-8"
             )
     combined = trimesh.util.concatenate(colored)
-    combined.export(stage / "editable.ply", file_type="ply")
+    combined.vertex_normals = np.vstack([mesh.vertex_normals for mesh in meshes])
+    combined.export(stage / "editable.ply", file_type="ply", vertex_normal=True)
     return {"mesh_count": len(meshes), "ply_texture": "vertex-sampled approximation"}

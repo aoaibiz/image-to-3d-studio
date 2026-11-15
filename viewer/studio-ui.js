@@ -6,7 +6,8 @@ app.id = 'studio-app';
 app.innerHTML = `
   <div class="workbench">
     <h2>画像を立体にする</h2>
-    <p class="intro">画像を1枚選び、生成後に回転して形を確認できます。見えない面は推定されます。生成結果の +Z は入力画像を見た方向で、被写体の正面とは限りません。画像と結果はこの端末の jobs/studio 内に保存されます。</p>
+    <p class="intro">画像を1枚選び、生成後に回転して形を確認できます。見えない面は推定されます。</p>
+    <p id="engine-info" class="intro" role="status">この端末の生成方式を確認しています。</p>
     <div class="drop" id="drop-zone" tabindex="0" aria-label="画像のドロップまたは貼り付け領域">
       <p><strong>画像をここにドロップ、または貼り付け</strong></p>
       <label class="pick">画像を選ぶ <input id="image-file" type="file" accept="image/png,image/jpeg,image/webp"></label>
@@ -19,7 +20,8 @@ app.innerHTML = `
     <figure id="pose-preview" hidden><img width="96" height="96" alt="自動で選んだポーズ"><figcaption>使用したポーズです。別の対象を作るには、その部分を切り抜いて送ってください。</figcaption></figure>
   </div>`;
 document.querySelector('header').after(app);
-document.querySelector('[data-view=front]').textContent = '入力側 +Z';
+const front = document.querySelector('[data-view=front]');
+front.textContent = '+Z 視点';
 const title = document.createElement('h2'); title.className = 'inspection-title'; title.textContent = '3D を確認';
 app.after(title);
 const input = document.querySelector('#image-file');
@@ -30,20 +32,50 @@ const cancel = document.querySelector('#cancel');
 const resume = document.querySelector('#resume');
 const state = document.querySelector('#job-state');
 const lastKey = 'image3d:last-job';
+const tripoSR = 'triposr-auto-finish-v2';
+const tripoSG = 'triposg-local-v1';
+let pipeline = null;
 let file = null, imageHash = '', jobId = '', stream = null, loadingJob = '', busy = false, jobActive = false, choice = 0, scrollOnResult = false;
 const terminal = new Set(['needs_review', 'failed', 'cancelled', 'interrupted']);
 const stages = { queued: '順番待ち', starting: '生成の準備中', 'initializing model': 'モデルを準備中', preprocessing: '画像を整えています', 'selecting source': '対象を選んでいます', 'finishing model': '形と塗装を仕上げています', 'resuming finish': '保存した立体から仕上げを再開しています', 'running model': '立体を推定中', 'extracting mesh': '形状を取り出しています', 'baking texture': '表面の色を作成中', inference: '立体を生成中', mesh: '形状を作成中', texture: 'テクスチャを作成中', export: 'GLB を出力中', inspection: '形式を検査中', rendering: '確認画像を作成中', appearance: '入力画像と立体を比較中', needs_review: '確認待ち', failed: '処理に失敗', cancelled: '中止', interrupted: '中断' };
 function message(text) { state.textContent = text; }
-function idKey(hash) { return 'image3d:finish-v2:input:' + hash; }
+Object.assign(stages, {
+  'segmenting source': '背景から被写体を切り出しています',
+  'generating shape': '立体の形を推定しています',
+  'resuming shape': '保存した計算結果から形状の生成を再開しています',
+  'painting model': '入力画像をもとに立体を着色しています'
+});
+function idKey(hash, engine) {
+  return 'image3d:' + (engine === tripoSR ? 'finish-v2' : engine) + ':input:' + hash;
+}
+function updateGenerate() {
+  generate.disabled = !pipeline || !file || busy || jobActive;
+}
+async function readEngine() {
+  const info = document.querySelector('#engine-info');
+  try {
+    const engine = await api('/api/engine', { cache: 'no-store' });
+    if (engine.local !== true || ![tripoSR, tripoSG].includes(engine.pipeline)) throw Error('対応するローカル生成方式を確認できません。');
+    pipeline = engine.pipeline;
+    info.textContent = pipeline === tripoSG
+      ? 'TripoSG は画像の切り抜き・形状の生成・着色をすべてこの端末で処理します。CPU では数時間かかる場合があります。'
+      : 'TripoSR がこの端末で形状を生成し、画像に合わせて仕上げます。';
+  } catch (error) {
+    pipeline = null;
+    info.textContent = '生成方式を取得できません。Studio の起動とバージョンを確認し、この画面を再読み込みしてください。';
+  }
+  updateGenerate();
+}
 function showControls(job) {
   const active = job.status === 'running' || job.status === 'queued';
   jobActive = active;
   cancel.hidden = !active; resume.hidden = !['failed', 'cancelled', 'interrupted'].includes(job.status);
-  generate.disabled = busy || !file || active;
+  updateGenerate();
 }
 async function choose(candidate) {
   if (!candidate) return;
   const selection = ++choice;
+  file = null; imageHash = ''; updateGenerate();
   if (!['image/png', 'image/jpeg', 'image/webp'].includes(candidate.type) || candidate.size > 20 * 1024 * 1024 || !candidate.size) {
     file = null; generate.disabled = true; selected.textContent = 'PNG・JPEG・WebP の画像を20 MB以下で選んでください。'; return;
   }
@@ -52,7 +84,7 @@ async function choose(candidate) {
   file = candidate; imageHash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
   selected.textContent = `選択中: ${candidate.name || '貼り付け画像'} (${(candidate.size / 1024 / 1024).toFixed(2)} MB)`;
   document.querySelector('#pose-preview').hidden = true;
-  generate.disabled = busy || jobActive;
+  updateGenerate();
   if (!jobId) message('画像を確認したら「3D を生成」を押してください。');
 }
 input.addEventListener('change', () => choose(input.files[0]));
@@ -63,7 +95,11 @@ document.addEventListener('paste', event => { const images = [...event.clipboard
 async function api(url, options) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw Error(data.error || `通信エラー (${response.status})`);
+  if (!response.ok) {
+    const error = Error(data.error || `通信エラー (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 async function loadResult(job) {
@@ -93,11 +129,16 @@ async function loadResult(job) {
     const sheet = inspection.image_comparison?.contact_sheet;
     comparison.hidden = !(sheet === actualHash + '_appearance-comparison.jpg' && job.artifacts.includes(sheet));
     if (!comparison.hidden) comparison.href = '/api/jobs/' + job.id + '/artifacts/' + sheet;
-    const selectedPose = settings.source_selection?.detected_count ? `全${settings.source_selection.detected_count}個の候補から上段の中央に近い1個を選びました。` : '';
+    const resultSG = (settings.pipeline || job.config?.pipeline) === tripoSG;
+    front.textContent = resultSG ? '+Z 視点' : '入力側 +Z';
+    const selectedPose = !resultSG && settings.source_selection?.detected_count ? `全${settings.source_selection.detected_count}個の候補から上段の中央に近い1個を選びました。` : '';
+    const shapeNote = resultSG
+      ? 'TripoSG が立体の形と向きを推定しました。入力画像に写った側は、立体を回して確認してください。'
+      : finishes[settings.finish_profile] || '';
     const pose = document.querySelector('#pose-preview');
     pose.hidden = !selectedPose || !job.artifacts.includes('input-processed.png');
     if (!pose.hidden) pose.querySelector('img').src = `/api/jobs/${job.id}/artifacts/input-processed.png`;
-    message(`${selectedPose}${finishes[settings.finish_profile] || ''}形式検査: ${status(inspection.format)}。形状: ${status(inspection.geometry)}。見た目: ${status(inspection.appearance)}${manualText}。ドラッグで全方向を確認してください。`);
+    message(`${selectedPose}${shapeNote}形式検査: ${status(inspection.format)}。形状: ${status(inspection.geometry)}。見た目: ${status(inspection.appearance)}${manualText}。ドラッグで全方向を確認してください。`);
     if (scrollOnResult) { scrollOnResult = false; title.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   } catch (error) { if (jobId === job.id) message(`結果を表示できません: ${error.message}`); }
   finally { if (loadingJob === job.id) loadingJob = ''; }
@@ -107,8 +148,13 @@ async function refresh(id) {
   if (id !== jobId) return;
   showControls(job);
   if (job.status !== 'needs_review') document.querySelector('#appearance-sheet').hidden = true;
-  const label = stages[job.stage] || job.stage || job.status;
-  message(`${label}（ジョブ ${job.id}）${job.error ? ' — ' + job.error : ''}`);
+  const savedStep = job.status === 'running' && /^shape step (\d+)\/(\d+)$/.exec(job.stage);
+  const label = savedStep ? stages['generating shape'] : stages[job.stage] || job.stage || job.status;
+  const progress = savedStep ? {step: Number(savedStep[1]), total: Number(savedStep[2])} : job.progress;
+  const steps = job.status === 'running' && Number.isSafeInteger(progress?.step) && Number.isSafeInteger(progress?.total)
+    && progress.total > 0 && progress.step >= 0 && progress.step <= progress.total
+    ? `（${progress.step}/${progress.total} ステップ）` : '';
+  message(`${label}${steps}（ジョブ ${job.id}）${job.error ? ' — ' + job.error : ''}`);
   if (job.status === 'needs_review') await loadResult(job);
   if (terminal.has(job.status)) { stream?.close(); stream = null; }
 }
@@ -120,17 +166,23 @@ function watch(id) {
   refresh(id).catch(error => message('状態を確認できません: ' + error.message));
 }
 generate.addEventListener('click', async () => {
-  if (!file || busy) return;
+  if (!file || !pipeline || jobActive || busy) return;
   busy = true; generate.disabled = true;
-  const chosen = file, hash = imageHash;
-  let key = localStorage.getItem(idKey(hash));
-  if (!key) { key = crypto.randomUUID(); localStorage.setItem(idKey(hash), key); }
-  message('画像を送信しています。同じ画像の再送には同じ識別子を使います。');
+  const chosen = file, expected = pipeline, storageKey = idKey(imageHash, expected);
+  let key = localStorage.getItem(storageKey);
+  if (!key) { key = crypto.randomUUID(); localStorage.setItem(storageKey, key); }
+  message('この端末の Studio に画像を渡しています。');
   try {
-    const { job } = await api('/api/jobs', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Studio-Client': '1', 'Idempotency-Key': key }, body: chosen });
+    const { job } = await api('/api/jobs', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Studio-Client': '1', 'X-Studio-Pipeline': expected, 'Idempotency-Key': key }, body: chosen });
     scrollOnResult = true; watch(job.id);
-  } catch (error) { message(`送信結果を確認できません: ${error.message}。再度「3D を生成」を押すと同じ依頼を照会します。`); }
-  finally { busy = false; generate.disabled = !file || jobActive; }
+  } catch (error) {
+    if (error.status === 409) {
+      await readEngine();
+      message(`依頼を受け付けられませんでした。生成方式を確認してください。${error.message}`);
+    } else {
+      message(`送信結果を確認できません: ${error.message}。再度「3D を生成」を押すと同じ依頼を照会します。`);
+    }
+  } finally { busy = false; updateGenerate(); }
 });
 async function action(name) {
   if (!jobId) return;
@@ -142,4 +194,5 @@ async function action(name) {
 cancel.addEventListener('click', () => action('cancel'));
 resume.addEventListener('click', () => action('resume'));
 const previous = localStorage.getItem(lastKey);
+readEngine();
 if (previous && /^[0-9a-f-]{36}$/.test(previous)) watch(previous);

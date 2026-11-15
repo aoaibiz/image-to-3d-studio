@@ -14,6 +14,72 @@ from finish_export import embed_master, export_finished
 
 
 class ExportTest(unittest.TestCase):
+    def test_obj_and_ply_preserve_corner_shading_for_mixed_instances(self):
+        scene = trimesh.Scene()
+        expected = {}
+        for i in range(2):
+            mesh = trimesh.Trimesh(
+                [[0.0, 0, 0], [1.0, 0, 0], [0.0, 1, 0]], [[0, 1, 2]], process=False
+            )
+            provided = np.array([[0.3, 0, 1], [0, 0.4, 1], [-0.2, 0.4, 1]])
+            provided /= np.linalg.norm(provided, axis=1, keepdims=True)
+            mesh.vertex_normals = provided
+            if not i:
+                mesh.visual = trimesh.visual.TextureVisuals(
+                    uv=mesh.vertices[:, :2],
+                    material=trimesh.visual.material.PBRMaterial(
+                        baseColorTexture=Image.new("RGB", (2, 2), "red")
+                    ),
+                )
+            else:
+                mesh.visual.vertex_colors = [60, 120, 180, 255]
+            matrix = trimesh.transformations.rotation_matrix(0.44, [0, 1, 0]) @ np.diag(
+                [1.1, 0.85, 1.3, 1]
+            )
+            matrix[0, 3] = i * 3.0
+            scene.add_geometry(mesh, transform=matrix)
+            positions = trimesh.transform_points(mesh.vertices, matrix)
+            normals = provided @ np.linalg.inv(matrix[:3, :3])
+            normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+            for pos, normal in zip(positions, normals):
+                expected[tuple(np.round(pos, 5))] = normal
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            export_finished(scene, folder)
+            text = (folder / "editable.obj").read_text().splitlines()
+            verts = [
+                list(map(float, line.split()[1:4]))
+                for line in text
+                if line.startswith("v ")
+            ]
+            normals = np.array(
+                [
+                    list(map(float, line.split()[1:]))
+                    for line in text
+                    if line.startswith("vn ")
+                ]
+            )
+            faces = [line.split()[1:] for line in text if line.startswith("f ")]
+            self.assertTrue(any("//" in face[0] for face in faces))
+            self.assertTrue(any("//" not in face[0] for face in faces))
+            for face in faces:
+                for corner in face:
+                    v, _, n = corner.split("/")
+                    np.testing.assert_allclose(
+                        normals[int(n) - 1],
+                        expected[tuple(np.round(verts[int(v) - 1], 5))],
+                        atol=1e-6,
+                    )
+            ply_bytes = (folder / "editable.ply").read_bytes()
+            header = ply_bytes.split(b"end_header", 1)[0]
+            for axis in (b"nx", b"ny", b"nz"):
+                self.assertIn(b"property float " + axis, header)
+            ply = trimesh.load(folder / "editable.ply", process=False)
+            for pos, normal in zip(ply.vertices, ply.vertex_normals):
+                np.testing.assert_allclose(
+                    normal, expected[tuple(np.round(pos, 5))], atol=1e-6
+                )
+
     def test_round_trip_multimaterial_and_colors(self):
         scene = trimesh.Scene()
         for i, color in enumerate(("red", "blue")):

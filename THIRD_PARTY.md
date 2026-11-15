@@ -1,5 +1,7 @@
 # Third-party components and model provenance
 
+任意の CPU 形状エンジン TripoSG のコード、重み、同梱モジュールの個別条件、取得元・固定リビジョンは [TripoSG の第三者条件](engine/TRIPOSG.md#第三者の利用条件) に記載しています。これらの資材は各利用者の専用環境に取得します。
+
 Inventory checked 2026-11-15 against the repository's setup and dependency declarations and the upstream sources linked below. This is an inventory, not a complete bill of materials or a replacement for the license texts required when distributing binaries. Dependencies and downloaded weights are runtime artifacts, not original project assets.
 
 ## Engine and model assets

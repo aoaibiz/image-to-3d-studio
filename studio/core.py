@@ -4,7 +4,8 @@ import math
 import os
 from pathlib import Path
 from .process_group import ProcessGroup
-from engine.pipeline import LEGACY_PIPELINE, PIPELINE
+from .configure import read_pipeline
+from engine.pipeline import LEGACY_PIPELINE, PIPELINE, SHAPE_PIPELINE
 import queue
 import re
 import sqlite3
@@ -26,6 +27,40 @@ def now():
 
 class JobError(Exception):
     pass
+
+
+class PipelineConflict(JobError):
+    pass
+
+
+SHAPE_OUTPUTS = {"shape-master.glb", "appearance.json", "generation.json", "input-processed.png"}
+SHAPE_ERRORS = {
+    "shape_setup": "TripoSG のローカル環境を確認し、オプションのセットアップ後に再開してください。",
+    "shape_foreground": "画像の切り抜きに失敗しました。背景と被写体、U2Net の設定を確認してください。",
+    "shape_inference": "形状生成に失敗しました。TripoSG のモデル、RAM と空き容量を確認して同じジョブを再開してください。",
+    "shape_registration": "生成した形状を写真の輪郭に重ねられず、着色を停止しました。切り抜きを確認してください。別の画像で試す場合は新しいジョブを作成してください。",
+    "shape_appearance": "形状の着色に失敗しました。保存した形状と入力画像を確認して再開してください。",
+}
+
+
+def _shape_notice(line):
+    """Map the worker protocol to fixed status/error text. Never relay raw details."""
+    try:
+        event = json.loads(line)
+    except ValueError:
+        return None, None
+    if not isinstance(event, dict):
+        return None, None
+    kind, stage = event.get("event"), event.get("stage")
+    if kind == "studio_error" and isinstance(event.get("code"), str):
+        return None, SHAPE_ERRORS.get(event["code"])
+    if kind == "resumed" and stage in ("encode", "denoise", "surface"):
+        return "resuming shape", None
+    if kind == "progress" and stage == "denoise":
+        step, total = event.get("step"), event.get("total")
+        if type(step) is int and type(total) is int and 0 < step <= total <= 10000:
+            return f"shape step {step}/{total}", None
+    return None, None
 
 
 def _lock_store(directory):
@@ -73,6 +108,7 @@ class JobCore:
             else self.root / "jobs" / "studio"
         )
         self.directory.mkdir(parents=True, exist_ok=True)
+        self.pipeline = read_pipeline(self.directory)
         self.store_lock = _lock_store(self.directory)
         self.db = sqlite3.connect(
             self.directory / "jobs.sqlite3", check_same_thread=False
@@ -145,6 +181,8 @@ class JobCore:
                 "offline-preview.html",
                 "manifest.json",
             ]
+            if job["config"].get("pipeline") == SHAPE_PIPELINE:
+                names.extend(["shape-master.glb", "appearance.json", "generation.json"])
             if folder.exists():
                 names.extend(
                     p.name
@@ -396,13 +434,15 @@ class JobCore:
                 self.checking.discard(job_id)
                 self.changed.notify_all()
 
-    def create(self, data, idem):
+    def create(self, data, idem, expected_pipeline=None):
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", idem or ""):
             raise JobError(
                 "Idempotency-Key を指定してください。英数字など128文字以内です。"
             )
         if not data or len(data) > MAX_INPUT:
             raise JobError("画像は20MB以下で選び直してください。")
+        if expected_pipeline is not None and expected_pipeline != self.pipeline:
+            raise PipelineConflict("サービスの生成方式が変わりました。使用する方式を確認してください。")
         digest = hashlib.sha256(data).hexdigest()
         with self.lock:
             row = self.db.execute(
@@ -413,7 +453,10 @@ class JobCore:
                     raise JobError(
                         "同じキーに異なる画像は使えません。新しいキーで送信してください。"
                     )
-                return self.get(row["id"]), False
+                job = self.get(row["id"])
+                if expected_pipeline is not None and job["config"].get("pipeline") != expected_pipeline:
+                    raise PipelineConflict("このキーは別の生成方式のジョブで使用済みです。")
+                return job, False
             self._validate_image(data)
             job_id = str(uuid.uuid4())
             folder = self.directory / job_id
@@ -433,10 +476,10 @@ class JobCore:
                     stamp,
                     json.dumps(
                         {
-                            "resolution": 96,
+                            "resolution": 256 if self.pipeline == SHAPE_PIPELINE else 96,
                             "texture_size": 1024,
                             "auto_finish": True,
-                            "pipeline": PIPELINE,
+                            "pipeline": self.pipeline,
                         }
                     ),
                 ),
@@ -587,10 +630,16 @@ class JobCore:
                 raise
             self.process = proc
         lines = []
+        failure = None
         for line in proc.stdout:
-            lines.append(line)
+            if stage != "starting":
+                lines.append(line)
             marker = line.strip()
-            if marker in (
+            notice = None
+            if stage == "starting" and marker.startswith("{"):
+                notice, problem = _shape_notice(marker)
+                failure = problem or failure
+            if notice or marker in (
                 "initializing model",
                 "preprocessing",
                 "running model",
@@ -599,16 +648,23 @@ class JobCore:
                 "selecting source",
                 "resuming finish",
                 "finishing model",
+                "segmenting source",
+                "generating shape",
+                "resuming shape",
+                "painting model",
             ):
                 with self.lock:
                     if self.get(job_id)["status"] == "running":
-                        self._update(job_id, "running", marker)
+                        self._update(job_id, "running", notice or marker)
+        proc.stdout.close()
         code = proc.wait()
         with self.lock:
             self.process = None
             if self.get(job_id)["status"] != "running":
                 raise JobError("cancelled")
         if code:
+            if failure:
+                raise JobError(failure)
             raise RuntimeError("command failed")
         return "".join(lines)
 
@@ -622,6 +678,9 @@ class JobCore:
             "editable.ply",
             "texture.png",
         }
+        shape = settings.get("pipeline") == SHAPE_PIPELINE
+        if shape:
+            required.update(SHAPE_OUTPUTS, {"material.mtl", "material_0.png"})
         if not isinstance(artifacts, dict) or not required.issubset(artifacts):
             return False
         present_materials = {
@@ -635,18 +694,28 @@ class JobCore:
             for name, expected in artifacts.items():
                 if (
                     not isinstance(name, str)
-                    or not re.fullmatch(
+                    or not (shape and name in SHAPE_OUTPUTS or re.fullmatch(
                         r"(?:model\.glb|editable\.gltf|editable\.obj|editable\.ply|texture\.png|material\.mtl|material_[0-9]+\.png)",
                         name,
-                    )
+                    ))
                     or not isinstance(expected, str)
                     or not re.fullmatch(r"[0-9a-f]{64}", expected)
                 ):
                     return False
                 if hashlib.sha256((out / name).read_bytes()).hexdigest() != expected:
                     return False
+            if shape:
+                appearance = json.loads((out / "appearance.json").read_text(encoding="utf-8"))
+                generation = json.loads((out / "generation.json").read_text(encoding="utf-8"))
+                if not (
+                    appearance["output_sha256"] == artifacts["model.glb"] == settings["glb_sha256"]
+                    and appearance["shape_sha256"] == artifacts["shape-master.glb"] == generation["shape_result"]["sha256"]
+                    and appearance["foreground_sha256"] == artifacts["input-processed.png"] == generation["engine"]["input_sha256"]
+                    and appearance["original_sha256"] == generation["foreground"]["source_sha256"] == settings["input_sha256"]
+                ):
+                    return False
             return True
-        except OSError:
+        except (OSError, ValueError, KeyError, TypeError):
             return False
 
     def _run_pipeline(self, job_id):
@@ -660,6 +729,7 @@ class JobCore:
         glb = out / "model.glb"
         settings_path = out / "settings.json"
         config = self.get(job_id)["config"]
+        shape = config.get("pipeline") == SHAPE_PIPELINE
         if (
             hashlib.sha256((folder / "input.image").read_bytes()).hexdigest()
             != self.get(job_id)["input_sha256"]
@@ -688,7 +758,7 @@ class JobCore:
                     or self._artifacts_valid(out, previous)
                 )
             )
-        except (OSError, ValueError, KeyError):
+        except (OSError, ValueError, TypeError, KeyError):
             pass
         if not valid_inference:
             if not config.get("auto_finish"):
@@ -699,31 +769,43 @@ class JobCore:
                 config.get("auto_finish")
                 and isinstance(previous, dict)
                 and previous.get("auto_finish_complete") is True
+                and not shape
                 and not (out / "raw-export" / "finish-checkpoint.json").is_file()
             ):
                 raise RuntimeError(
                     "finished artifacts are damaged and no finish checkpoint exists"
                 )
+            if shape and isinstance(previous, dict) and previous.get("auto_finish_complete") is True:
+                from engine.triposg_cpu import read_json, valid_artifact
+
+                work = out / "local-shape-work" / "triposg"
+                try:
+                    key = read_json(work / "identity.json")["job_key"]
+                    checkpoint = valid_artifact(work / "raw-shape.glb", key)
+                except (OSError, ValueError, KeyError, TypeError):
+                    checkpoint = None
+                if not checkpoint:
+                    raise JobError("成果物と形状の再開用データを照合できません。ジョブのバックアップを確認してください。")
             # Only clear files inside this job's own output directory.
-            for p in out.iterdir():
-                if p.is_file():
-                    p.unlink()
-            self._command(
-                job_id,
-                [
-                    py,
-                    str(self.root / "engine" / "infer.py"),
-                    str(folder / "input.image"),
-                    str(out),
-                    "--resolution",
-                    str(config["resolution"]),
-                    "--texture-size",
-                    str(config["texture_size"]),
-                    "--pipeline",
-                    config.get("pipeline", LEGACY_PIPELINE),
-                ],
-                "starting",
-            )
+            if not shape:
+                for p in out.iterdir():
+                    if p.is_file():
+                        p.unlink()
+            if shape:
+                command = [py, "-u", "-m", "engine.local_shape_job"]
+            else:
+                command = [py, str(self.root / "engine" / "infer.py")]
+            command.extend([
+                str(folder / "input.image"),
+                str(out),
+                "--resolution",
+                str(config["resolution"]),
+                "--texture-size",
+                str(config["texture_size"]),
+            ])
+            if not shape:
+                command.extend(["--pipeline", config.get("pipeline", LEGACY_PIPELINE)])
+            self._command(job_id, command, "starting")
         digest = hashlib.sha256(glb.read_bytes()).hexdigest()
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         if (
@@ -785,11 +867,22 @@ class JobCore:
             or not all((out / name).is_file() for name in manifest["files"])
         ):
             raise RuntimeError("proof hash mismatch")
-        if config.get("pipeline") == PIPELINE:
-            # Resolve only a baseline created by this job, including after recovery.
+        if config.get("pipeline") in (PIPELINE, SHAPE_PIPELINE):
+            source = None
             raw = settings.get("raw_export", "")
-            if re.fullmatch(r"raw-export/[0-9a-f]{32}", raw):
+            if shape:
+                source = out / "input-processed.png"
+                appearance = json.loads((out / "appearance.json").read_text(encoding="utf-8"))
+                inspection["source_registration"] = {
+                    "geometry_master": "shape-master.glb",
+                    "shape_sha256": appearance["shape_sha256"],
+                    "source_agreement": appearance.get("source_agreement"),
+                    "alignment": appearance.get("registration"),
+                    "status": "needs_review",
+                }
+            elif re.fullmatch(r"raw-export/[0-9a-f]{32}", raw):
                 source = out / raw / "foreground.png"
+            if source is not None:
                 report = json.loads(
                     self._command(
                         job_id,

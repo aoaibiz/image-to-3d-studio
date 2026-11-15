@@ -16,7 +16,7 @@ node cli.mjs inspect JOB_ID
 node cli.mjs export JOB_ID model.glb path/to/output.glb
 ```
 
-`generate` requires an explicit stable request key: reuse it for retries of the same request. `export` refuses to overwrite unless `--overwrite` is explicitly appended. `show` prints the local preview URL.
+`generate` requires a stable request key. Reuse it when retrying the same image with the same pipeline. Use a new key when intentionally generating the same image with a different pipeline. `export` requires `--overwrite` to replace an existing file. `show` prints the local preview URL.
 
 MCP uses stdio: run `node clients/mcp.mjs` with the absolute path appropriate to the installation. Tools accept image bytes encoded as base64, never local paths. `artifact_chunk` returns up to 256 KiB per call and a `nextOffset`; its maximum offset is 64 MiB. `wait` uses the local event stream. Cancelling the MCP call stops waiting; use the `cancel` tool to cancel the job itself.
 
@@ -56,6 +56,11 @@ Use one PNG, JPEG, or WebP (up to 20 MiB) as the reference. Start the local serv
 
 Inspect the original reference, model, and hash-matched material and clay views together, including the back, underside, joints, and parts visible in the input. Use `inspection.json` for format and measured-geometry results and `settings.json` for input/output hashes, processing and any applied or skipped steps. An image cannot establish hidden surfaces, physical scale, or manufacturing suitability. The manual cat profile supported by the `inspect` tool is explicitly specified by the operator; it is not a general-purpose animal, vehicle or product classifier. The optional geometric casting and atlas color tools have separately documented narrow inputs and cannot certify a model: see `engine/CAST.md` and `quality/PAINT.md`. Preserve input and output hashes and report uncertain or skipped analysis as such.
 
-Every image uses local TripoSR for the base reconstruction. Automated category-specific processing, when available and supported by measured image evidence, is a heuristic rather than identification or a guarantee of fidelity; use the job's own `settings.json` to see what actually ran. If the evidence is insufficient, retain and inspect the base result and report the fallback. Generation, inferred depth and visual review must remain distinct in the report. No image is sent to a remote service by this local workflow.
+The service chooses the pipeline at startup. Use `node cli.mjs diagnose` to check the service environment. Read `GET /api/engine` on that same service to identify the exact pipeline configured for new jobs. The web UI shows the selection before enabling generation. Both supported pipelines process images locally.
+
+- `triposr-auto-finish-v2` uses TripoSR for the base shape and applies category-specific finishing when the image supports it. See each job’s `settings.json` for the steps actually applied.
+- `triposg-local-v1` uses TripoSG for shape inference and colors the result locally. CPU generation can take hours. The model estimates the object's orientation, so rotate it to find the side shown in the photo.
+
+An HTTP client can read `pipeline` and `local` from `GET /api/engine`, then include that exact pipeline in the `X-Studio-Pipeline` header on `POST /api/jobs`, along with its stable `Idempotency-Key`. If a configuration change causes a conflict, check the active pipeline before submitting again. To recover an existing job, use its job ID. In the viewer, the input/model comparison link appears when the job includes a comparison sheet matching the displayed GLB hash.
 
 For an alternate local service port, start the service with its --port option and set STUDIO_PORT to a decimal integer from 1 to 65535 in the CLI or standalone MCP process environment. The host remains fixed at 127.0.0.1. The default is 47631. The packaged Codex plugin may not inherit custom environment variables; use its default port unless the host is explicitly configured to pass the variable.
