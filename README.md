@@ -8,6 +8,10 @@
 
 猫は技術検証用に描いた別キャラクターです。フィギュアとして解釈した補助画像を使うと、頭部3断面の奥行き／幅が0.78〜0.85になりました。脚の接合部や底面は要確認です。[材質あり](demo/control-result/sheet-material.jpg) ・ [無地](demo/control-result/sheet-clay.jpg) ・ [来歴](demo/control-result/README.md)
 
+## 生成後の造形・塗装を調べる
+
+手足と胴の接合を作り直す際は、測った寸法をレシピにして滑らかな面を出力できます。部位と寸法は作業者が指定します。塗装の検査では、意図した色とテクスチャ上の領域を指定し、小さな異色のかたまりを探せます。どちらも任意のローカル CLI です。[造形レシピ](engine/CAST.md)・[塗装検査](quality/PAINT.md)
+
 ## 起動する
 
 Windows 11 x64、Git、[uv](https://docs.astral.sh/uv/getting-started/installation/)、Node.js 22 と npm、WebGL を利用できる Chrome または Edge を用意してください。実測環境は Ryzen 7 255、RAM 29.8 GiB、Radeon 780M です。推論は CPU を使用します。初回に約1.68 GBの重みのほか、Python・依存パッケージ・検証ツールをダウンロードするため、数 GB の空き容量が必要です。
