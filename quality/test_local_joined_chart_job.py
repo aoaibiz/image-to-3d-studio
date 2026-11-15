@@ -117,6 +117,62 @@ class LocalJoinedJobTests(unittest.TestCase):
             with self.assertRaises(job.StageError): self.run_job()
             self.assertEqual(remote.call_count,1)
 
+    def paint_fixture(self, output_dir, args, method):
+        output_dir.mkdir()
+        for name in job.EDITABLE:
+            (output_dir/name).write_bytes(("painted " + name).encode())
+        return dict(
+            output_glb=sg.digest(output_dir/"model.glb"), source_glb=sg.digest(args["native_model"]),
+            foreground_sha256=sg.digest(args["foreground"]), source_image_sha256=sg.digest(args["source_photo"]),
+            visual_brief_sha256=local.json_sha(args["observation"]), method=method,
+            supported_hidden_fraction=.75, locked_changed=0, unsupported_surface_changed=0,
+            normals_uv_nodes_material_and_all_other_buffers_bitwise_identical=True,
+            source_rear_observed=False, changed_uv=15)
+
+    def test_applied_local_material_requires_bound_source_and_reopened_evidence(self):
+        def accepted(output_dir, **args):
+            stats=self.paint_fixture(output_dir,args,"source-surface-continuity-v1")
+            stats.update(eligible_hidden_uv=100, supported_hidden_uv=75)
+            sg.atomic_json(output_dir/"continuity-paint.json",stats)
+            return stats
+        self.cont.side_effect=accepted
+        with patch.object(provider,"generate_chart",side_effect=AssertionError("unexpected external request")):
+            settings=self.run_job()
+            self.assertEqual(settings["chart_decision"],"local_continuity")
+            self.assertTrue(job.valid_chart(self.out,settings))
+        path=self.out/"continuity-paint.json"
+        stats=sg.read_json(path);stats["visual_brief_sha256"]="a"*64;sg.atomic_json(path,stats)
+        settings["artifact_sha256"][path.name]=sg.digest(path)
+        self.assertFalse(job.valid_chart(self.out,settings))
+
+    def test_single_inferred_output_agrees_with_all_source_and_sheet_digests(self):
+        def guides(output_dir,**kwargs):
+            output_dir.mkdir();(output_dir/"guide.png").write_bytes(b"guide")
+            m={"chart_id":"b"*64};sg.atomic_json(output_dir/"chart.json",m);return m
+        def proposed(source,guide,manifest,work,**kwargs):
+            slot=work/"guided-paint";slot.mkdir()
+            sheet=slot/"sheet.png";sheet.write_bytes(b"synthetic integration only")
+            receipt=dict(job_recipe=chart.METHOD,chart_id="b"*64,state="completed",attempts=1,
+                         thread_id="fixture",sheet_sha256=sg.digest(sheet),guide_sha256=sg.digest(guide),
+                         directions=["joined_chart"],visual_brief_sha256=local.json_sha(self.obs))
+            sg.atomic_json(slot/"receipt.json",receipt);kwargs["before_submission"]()
+            return dict(sheet=sheet,provenance=receipt)
+        def projected(output_dir,**kwargs):
+            stats=self.paint_fixture(output_dir,kwargs,chart.METHOD)
+            receipt=kwargs["receipt"]
+            stats.update(source_observed_changed=0,sheet_sha=receipt["sheet_sha256"],guide_sha=receipt["guide_sha256"],
+                         chart_id=receipt["chart_id"],generation_id=receipt["thread_id"])
+            sg.atomic_json(output_dir/"chart-paint.json",stats)
+            return stats
+        with patch.object(chart,"prepare_chart",side_effect=guides),patch.object(provider,"generate_chart",side_effect=proposed) as send,patch.object(chart,"apply_chart",side_effect=projected):
+            settings=self.run_job(); self.run_job()
+            self.assertEqual(settings["chart_decision"],"inferred_chart")
+            self.assertTrue(job.valid_chart(self.out,settings));send.assert_called_once()
+        path=self.out/"chart-paint.json"
+        stats=sg.read_json(path);stats["unsupported_surface_changed"]=3;sg.atomic_json(path,stats)
+        settings["artifact_sha256"][path.name]=sg.digest(path)
+        self.assertFalse(job.valid_chart(self.out,settings))
+
     def test_corrupt_saved_editable_master_cannot_be_resealed(self):
         def accepted(output_dir,**kwargs):
             output_dir.mkdir()
