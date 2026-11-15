@@ -44,6 +44,7 @@ SHAPE_ERRORS = {
     "guided_checkpoint": "保存した形状または塗装の記録を照合できません。ジョブのバックアップを確認してください。",
     "guided_guides": "立体から背面の確認画像を作成できませんでした。保存した形状を確認してください。",
     "guided_provider": "背面の推定画像を取得できませんでした。Codexのログイン・利用枠を確認してください。再開時は受付済みの結果を確認します。",
+    "guided_orientation": "推定した背面の向きを確認できませんでした。元の立体と検品画像をジョブに保存しています。",
     "guided_projection": "推定画像を立体に重ねられませんでした。元のローカルモデルはジョブに保存されています。",
     "guided_export": "背面を仕上げたGLBの書き出しを確認できません。同じジョブを再開してください。",
     "shape_setup": "TripoSG のローカル環境を確認し、オプションのセットアップ後に再開してください。",
@@ -670,6 +671,7 @@ class JobCore:
                 "analyzing surface markings",
                 "preparing shape guides",
                 "requesting inferred paint",
+                "checking hidden surfaces",
                 "applying inferred paint",
                 "exporting guided model",
             ):

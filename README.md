@@ -26,6 +26,19 @@
 
 自動生成後に手作業で接合部を調整したい場合は、別途、部位と寸法を指定したレシピから滑らかな面を出力できます。塗装の検査では、意図した色とテクスチャ上の領域を指定し、小さな異色のかたまりを探せます。どちらも任意のローカル CLI です。[造形レシピ](engine/CAST.md)・[塗装検査](quality/PAINT.md)
 
+## 写真から背面の塗装を推定する（プレビュー）
+
+Windows で次の初期設定を1回行うと、1枚の写真からローカルで色・模様・正面の部品を読み取り、TripoSG の立体から背面の確認画像を作ります。塗装の提案には本人の ChatGPT 利用枠を使用し、メタデータを除いた元写真と立体の確認画像を OpenAI に送信します。プロンプトへの模様の書き足しは不要です。アカウントの残枠は事前に確認してください。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -SendPhotoAndGuidesToOpenAI
+.\.runtime\venv\Scripts\python.exe -m studio.server
+```
+
+Codex 内蔵の画像生成を使う構成では、上の初期設定に `-UseCodexHost` を追加します。通常の Web 画面だけで使う構成は、画像生成を利用できる Codex CLI への ChatGPT ログインが必要です。短いインストール先（例 `C:\3d\studio`）を使うと、Windows のパス長制限による依存関係のインストール失敗を避けやすくなります。
+
+生成した裏面に正面特有の部品が重なる、または推定画像の輪郭・穴が形状に合わない場合は投影を止めます。GLB の外観は正面・側面・背面と無地表示で検品してください。無料のローカル構成、外部送信の解除、モデルの利用条件は各手順で確認できます。[写真解析](engine/VISUAL_BRIEF.md) ・ [TripoSG](engine/TRIPOSG.md) ・ [クライアント設定](clients/README.md)
+
 ## 起動する
 
 Windows 11 x64、Git、[uv](https://docs.astral.sh/uv/getting-started/installation/)、Node.js 22 と npm、WebGL を利用できる Chrome または Edge を用意してください。実測環境は Ryzen 7 255、RAM 29.8 GiB、Radeon 780M です。推論は CPU を使用します。初回に約1.68 GBの重みのほか、Python・依存パッケージ・検証ツールをダウンロードするため、数 GB の空き容量が必要です。

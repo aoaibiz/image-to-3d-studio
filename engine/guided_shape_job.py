@@ -154,7 +154,17 @@ def _prepare(source, base, work, settings, observations=None):
     return guides, layout
 
 
-def _project(base, guides, sheet, receipt, stage):
+def _orientation_check(base, source, sheet, layout, work):
+    from engine.hidden_review import review_hidden_paint
+
+    camera = sg.read_json(base / "generation.json")["camera"]["camera_frame"]
+    return review_hidden_paint(
+        base / "model.glb", source, base / "input-processed.png", sheet,
+        layout.get("visual_brief"), work / "orientation", camera_frame=camera,
+    )
+
+
+def _project(base, guides, sheet, receipt, stage, orientation):
     from engine.guided_texture import apply_guides
 
     camera = sg.read_json(base / "generation.json")["camera"]["camera_frame"]
@@ -212,6 +222,7 @@ def _project(base, guides, sheet, receipt, stage):
         baseline_sha256=receipt["geometry_sha256"],
         sheet_sha256=receipt["sheet_sha256"],
         provider=evidence,
+        hidden_orientation=orientation,
         visual_quality="needs_review",
     )
     sg.atomic_json(stage / "guided-paint.json", stats)
@@ -333,12 +344,18 @@ def run(source, out, resolution=256, texture_size=1024, *, setup, pipeline=GUIDE
                 raise ValueError(
                     "外部生成の写真・形状・結果の記録を確認できませんでした。"
                 )
+            stage = "guided_orientation"
+            print("checking hidden surfaces", flush=True)
+            record(stage)
+            orientation = _orientation_check(base, source, sheet, layout, work)
+            if orientation["hold_projection"]:
+                raise StageError(stage, "推定した背面に正面の特徴が重なっています。画像と検品記録を保存しました。")
             stage = "guided_projection"
             print("applying inferred paint", flush=True)
             record(stage)
             with tempfile.TemporaryDirectory(dir=work) as tmp:
                 stage_dir = Path(tmp) / "deliverables"
-                _project(base, guides, sheet, receipt, stage_dir)
+                _project(base, guides, sheet, receipt, stage_dir, orientation)
                 stage = "guided_export"
                 print("exporting guided model", flush=True)
                 record(stage)

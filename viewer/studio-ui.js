@@ -48,6 +48,7 @@ Object.assign(stages, {
   'analyzing surface markings': '元写真の色、繰り返し模様、正面だけにある部品を読み取っています',
   'preparing shape guides': '立体から背面の確認画像を作っています',
   'requesting inferred paint': 'OpenAIで背面の塗装を推定しています',
+  'checking hidden surfaces': '背面に正面の部品や模様が重複していないか確認しています',
   'applying inferred paint': '推定した塗装を立体に合わせています',
   'exporting guided model': '塗装済みのモデルを書き出しています'
 });

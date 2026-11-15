@@ -44,6 +44,11 @@ class GuidedJobTests(unittest.TestCase):
         observer = patch.object(job, "_observations", return_value={"visible_palette": ["gold"]})
         self.observer = observer.start()
         self.addCleanup(observer.stop)
+        check = patch.object(job, "_orientation_check", return_value={
+            "hold_projection": False, "status": "needs_review",
+        })
+        self.orientation = check.start()
+        self.addCleanup(check.stop)
         self.submissions = 0
 
     def base(self, source, out, resolution, texture_size):
@@ -167,6 +172,16 @@ class GuidedJobTests(unittest.TestCase):
         self.paint.generate_guided_paint.assert_not_called()
         self.observer.side_effect = None
         self.invoke()
+        self.assertEqual(self.submissions, 1)
+
+    def test_front_features_duplicated_on_back_hold_before_export(self):
+        self.orientation.return_value = {"hold_projection": True, "status": "needs_review"}
+        with self.assertRaises(job.StageError) as err:
+            self.invoke()
+        self.assertEqual(err.exception.code, "guided_orientation")
+        self.assertTrue((self.out / "local-guided-work/base/model.glb").exists())
+        self.assertFalse((self.out / "model.glb").exists())
+        self.texture.apply_guides.assert_not_called()
         self.assertEqual(self.submissions, 1)
 
     def test_projection_failure_preserves_base_and_provider_receipt(self):
