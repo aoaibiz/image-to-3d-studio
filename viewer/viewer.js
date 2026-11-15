@@ -152,7 +152,7 @@ function checkEmbeddedGLB(bytes) {
   }
   check(json);
 }
-async function openFile(file) {
+async function openFile(file, expectedSha) {
   if (!file) return;
   const current = ++selection;
   status.textContent = '読み込み中…';
@@ -161,6 +161,7 @@ async function openFile(file) {
     checkEmbeddedGLB(bytes);
     const digest = await crypto.subtle.digest('SHA-256', bytes);
     const nextHash = Array.from(new Uint8Array(digest), x => x.toString(16).padStart(2, '0')).join('');
+    if (expectedSha !== undefined && nextHash !== expectedSha) throw Error('検品記録とGLBが一致しません');
     const manager = new THREE.LoadingManager();
     manager.setURLModifier(url => {
       if (!url.startsWith('blob:') && !url.startsWith('data:')) throw Error('外部リソースは禁止されています');

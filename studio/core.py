@@ -44,6 +44,45 @@ class ReviewHold(Exception):
 
 SHAPE_OUTPUTS = {"shape-master.glb", "appearance.json", "generation.json", "input-processed.png"}
 GUIDED_OUTPUTS = {"guided-paint.json", "guided-views.png", "guided-layout.json", "inferred-paint.png"}
+HYPOTHESIS_REPORT = "shape-hypothesis.json"
+HYPOTHESIS_GLB = "shape-alternative.glb"
+HYPOTHESIS_MASTER = "shape-alternative.gltf"
+HYPOTHESIS_FILES = {HYPOTHESIS_REPORT, HYPOTHESIS_GLB, HYPOTHESIS_MASTER, "pre-hypothesis.glb"}
+
+
+def _hypothesis_files(out, settings, source_sha, validate):
+    selection = settings.get("shape_hypothesis")
+    if not isinstance(selection, dict) or selection.get("report") != HYPOTHESIS_REPORT:
+        return {}
+    try:
+        sealed = settings["artifact_sha256"]
+        decision = selection["decision"]
+        names = {HYPOTHESIS_REPORT}
+        if decision == "alternative":
+            if selection.get("alternative_model") != HYPOTHESIS_GLB or selection.get("alternative_editable") != HYPOTHESIS_MASTER:
+                return {}
+            names.update((HYPOTHESIS_GLB, HYPOTHESIS_MASTER))
+        elif decision == "applied":
+            names.add("pre-hypothesis.glb")
+        elif decision != "unchanged":
+            return {}
+        if (names != HYPOTHESIS_FILES.intersection(sealed) or settings["input_sha256"] != source_sha
+                or any((out / name).resolve() != out.resolve() / name for name in names)
+                or not validate(out, settings)):
+            return {}
+        report = json.loads((out / HYPOTHESIS_REPORT).read_bytes())
+        if report["decision"] != decision or report["source_sha256"] != source_sha:
+            return {}
+        if decision == "alternative" and (
+                report["dimensions_observed"] is not False or report["visual_quality"] != "needs_review"
+                or report["candidate"]["sha256"] != sealed[HYPOTHESIS_GLB]
+                or report["painted_before"]["sha256"] != settings["glb_sha256"]
+                or report["delivered"]["sha256"] != settings["glb_sha256"]
+                or sealed[HYPOTHESIS_GLB] == settings["glb_sha256"]):
+            return {}
+        return {name: sealed[name] for name in sorted(names)}
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
+        return {}
 SHAPE_ERRORS = {
     "sf3d_observed_review": "材質または塗装の向きを確認できず、仕上げを保留しました。同じジョブに保存した検品記録を確認してください。",
     "sf3d_observed_error": "生成を中断しました。SF3Dの利用枠、Codexのログインと元の受付を確認し、同じジョブを再開してください。",
@@ -226,9 +265,14 @@ class JobCore:
                               "guided-views.png", "guided-layout.json", "inferred-paint.png",
                               "hidden-review.json", "region.json", "full-paint.json", "native-inspection.png", "native-material.json"}
                 try:
-                    sealed = json.loads((folder / "settings.json").read_bytes())["artifact_sha256"]
+                    settings = json.loads((folder / "settings.json").read_bytes())
+                    sealed = settings["artifact_sha256"]
                     if isinstance(sealed, dict):
                         names.extend(sorted(candidates.intersection(sealed)))
+                        extra = _hypothesis_files(folder, settings, job["input_sha256"], self._artifacts_valid)
+                        if extra:
+                            names.extend(extra)
+                            job["shape_hypothesis_files"] = extra
                 except (KeyError, OSError, TypeError, ValueError):
                     pass
             if folder.exists():

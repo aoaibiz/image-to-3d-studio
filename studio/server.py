@@ -383,6 +383,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(404, {"error": "成果物がありません。"})
                     return
                 file = self.server.core.directory / job_id / "output" / filename
+                if filename in job.get("shape_hypothesis_files", {}):
+                    data = file.read_bytes()
+                    if hashlib.sha256(data).hexdigest() != job["shape_hypothesis_files"][filename]:
+                        self.send_json(404, {"error": "形状の検品記録とファイルが一致しません。"})
+                        return
+                    self.send_bytes(200, data, mimetypes.guess_type(filename)[0] or "application/octet-stream")
+                    return
                 if job["status"] == "review_hold":
                     hold = job["hold"]
                     if filename == "review-hold.json":

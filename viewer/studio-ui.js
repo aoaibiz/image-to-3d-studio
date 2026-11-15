@@ -25,6 +25,10 @@ const front = document.querySelector('[data-view=front]');
 front.textContent = '+Z 視点';
 const title = document.createElement('h2'); title.className = 'inspection-title'; title.textContent = '3D を確認';
 app.after(title);
+const shapeLink = document.createElement('a');
+shapeLink.className = 'shape-variant'; shapeLink.hidden = true;
+title.after(shapeLink);
+const requested = new URLSearchParams(location.search);
 const input = document.querySelector('#image-file');
 const drop = document.querySelector('#drop-zone');
 const selected = document.querySelector('#selected');
@@ -143,19 +147,41 @@ async function loadResult(job) {
   if (loadingJob === job.id) return;
   loadingJob = job.id;
   try {
+    const alternative = requested.get('job') === job.id && requested.get('view') === 'shape-alternative';
+    const candidate = job.shape_hypothesis_files?.['shape-alternative.glb'];
+    const available = /^[0-9a-f]{64}$/.test(candidate || '') && job.artifacts.includes('shape-alternative.glb');
+    shapeLink.hidden = !available && !alternative;
+    shapeLink.textContent = alternative ? '元のモデルに戻る' : '推定した形状の別案を回す';
+    shapeLink.href = '?job=' + job.id + (alternative ? '' : '&view=shape-alternative');
+    if (alternative) {
+      title.textContent = '形状の別案（推定・要確認）';
+      document.body.classList.add('shape-alternative', 'hold-no-preview');
+      document.querySelector('#appearance-sheet').hidden = true;
+      document.querySelector('#pose-preview').hidden = true;
+      if (!available) throw Error('このジョブの形状の別案を検品記録から確認できません。');
+    }
     if (!job.artifacts.includes('model.glb') || !job.artifacts.includes('inspection.json')) throw Error('結果ファイルが揃っていません。');
+    const filename = alternative ? 'shape-alternative.glb' : 'model.glb';
     const [inspection, settings, response] = await Promise.all([
       api(`/api/jobs/${job.id}/artifacts/inspection.json`),
       api(`/api/jobs/${job.id}/artifacts/settings.json`),
-      fetch(`/api/jobs/${job.id}/artifacts/model.glb`)
+      fetch(`/api/jobs/${job.id}/artifacts/${filename}`)
     ]);
     if (!response.ok) throw Error('GLB を読み込めませんでした。');
     const bytes = await response.arrayBuffer();
     if (jobId !== job.id) return;
-    const result = new File([bytes], 'model.glb', { type: 'model/gltf-binary' });
-    const actualHash = await window.openViewerFile(result);
+    const expected = alternative ? candidate : inspection.sha256;
+    const result = new File([bytes], filename, { type: 'model/gltf-binary' });
+    const actualHash = await window.openViewerFile(result, expected);
     if (jobId !== job.id) return;
-    if (!actualHash || actualHash !== inspection.sha256) throw Error('表示した GLB と検査結果の SHA が一致しません。');
+    if (!actualHash || actualHash !== expected) throw Error('表示した GLB と検査結果の SHA が一致しません。');
+    if (alternative) {
+      document.querySelector('#download').textContent = '推定形状のGLBを保存';
+      document.body.classList.remove('hold-no-preview');
+      message('元写真に写っていない形状や寸法を補った別案です。回転して確認してください。');
+      return;
+    }
+    if (available) title.textContent = '元のモデルを確認';
     const labels = { pass: '合格', fail: '不合格', reject: '不合格', review: '要確認', needs_review: '要確認', pending_review: '人の確認待ち', unknown: '未確認' };
     const status = part => labels[part?.status] || '未確認';
     const manual = job.review;
@@ -255,6 +281,12 @@ async function refresh(id) {
   if (terminal.has(job.status)) { stream?.close(); stream = null; }
 }
 function watch(id) {
+  if (jobId !== id) {
+    shapeLink.hidden = true;
+    document.body.classList.remove('shape-alternative');
+    title.textContent = '3D を確認';
+    document.querySelector('#download').textContent = '元の GLB を保存';
+  }
   stream?.close(); jobId = id; localStorage.setItem(lastKey, id);
   stream = new EventSource(`/api/jobs/${id}/events`);
   stream.onmessage = () => refresh(id).catch(error => message('状態を確認できません: ' + error.message));
