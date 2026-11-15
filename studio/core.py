@@ -221,10 +221,16 @@ class JobCore:
                 names.extend(["shape-master.glb", "appearance.json", "generation.json"])
             if job["config"].get("pipeline") == SF3D_PIPELINE:
                 names.extend(["provider-native.glb", "generation.json"])
-            if job["config"].get("pipeline") == SF3D_OBSERVED_PIPELINE:
-                names.extend(["shape-master.glb", "generation.json", "finished-native.glb",
+            if job["config"].get("pipeline") == SF3D_OBSERVED_PIPELINE and job["status"] == "needs_review":
+                candidates = {"shape-master.glb", "generation.json", "finished-native.glb",
                               "guided-views.png", "guided-layout.json", "inferred-paint.png",
-                              "hidden-review.json", "region.json", "native-inspection.png", "native-material.json"])
+                              "hidden-review.json", "region.json", "full-paint.json", "native-inspection.png", "native-material.json"}
+                try:
+                    sealed = json.loads((folder / "settings.json").read_bytes())["artifact_sha256"]
+                    if isinstance(sealed, dict):
+                        names.extend(sorted(candidates.intersection(sealed)))
+                except (KeyError, OSError, TypeError, ValueError):
+                    pass
             if folder.exists():
                 names.extend(
                     p.name

@@ -173,7 +173,8 @@ async function loadResult(job) {
     const shapeNote = resultSG
       ? 'TripoSG が立体の形と向きを推定しました。入力画像に写った側は、立体を回して確認してください。'
       : settings.pipeline === 'sf3d-codex-observed-v1'
-        ? (settings.appearance_mode === 'native_material' ? '元のSF3D材質を保持しました。' : '背面の塗装を推定しました。')
+        ? ({ native_material: '元のSF3D材質を保持しました。', guided_region: '背面の塗装を推定しました。',
+             guided_full: '写真に写る面の塗装を保ち、2方向の形状ガイドに合う面に推定色を反映しました。' }[settings.appearance_mode] || '')
           + '写真に写っていない面と薄い部品を確認してください。'
         : resultSF3D ? 'SF3Dが形状と材質を推定しました。背面の模様と薄い部品を確認してください。' : finishes[settings.finish_profile] || '';
     const pose = document.querySelector('#pose-preview');

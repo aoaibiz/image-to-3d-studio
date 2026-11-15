@@ -54,7 +54,11 @@ def read_hold(out, source_sha):
         artifacts = ["review-hold.json", "review-native.glb"]
         if hold.get("image_sha256") is not None:
             picture = _file(out, "review-native.png", 16 << 20)
-            if _digest(picture) != hold["image_sha256"]:
+            review = json.loads(_file(base.parent, "native-material.json", 1 << 20).read_bytes())
+            if (hold["stage"] != "native_inspection" or review["source_sha256"] != source_sha
+                    or review["model_sha256"] != hold["preview_sha256"]
+                    or review["inspection_sha256"] != hold["image_sha256"]
+                    or _digest(picture) != hold["image_sha256"]):
                 return None
             artifacts.append("review-native.png")
         return hold, artifacts
