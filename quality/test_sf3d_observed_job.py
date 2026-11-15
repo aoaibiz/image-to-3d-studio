@@ -748,6 +748,92 @@ class AnalyticSurfaceIntegration(unittest.TestCase):
     "Private sealed painted-geometry trial is optional.",
 )
 class ArchivedShapeIntegration(unittest.TestCase):
+    def test_chart_transfer_uses_real_mesh_and_generated_test_receipt(self):
+        """The hidden sheet is an earlier texture projection, not a new model response."""
+        import io
+
+        from engine import guided_provider, joined_chart_provider
+        from studio.configure import agreement
+
+        root = Path(os.environ["STUDIO_SF3D_SHAPE_REPLAY"])
+        archive = (
+            root
+            / "run/store/b7bc98b1-c8d3-4ccd-8e40-7700ad1abbcb/output/sf3d-observed-work"
+        )
+        sheet = root / "joined-chart/offline-paint-transfer.png"
+        source = root / "input.jpg"
+        reg = files.read_json(archive / "registration.json")
+        seal = files.read_json(archive / "appearance/observation-seal.json")
+        with tempfile.TemporaryDirectory() as temp:
+            out = Path(temp)
+            work = out / "sf3d-observed-work"
+            base = work / "native"
+            shutil.copytree(archive / "native", base)
+            account = work / "appearance"
+            account.mkdir()
+            setup = work / "test-setup.json"
+            files.atomic_json(
+                setup, {"pipeline": job.PIPELINE, "agreement": agreement(job.PIPELINE)}
+            )
+
+            def synthetic_transport(photo, guide, manifest, account_dir, **kwargs):
+                joined_chart_provider.chart_consent(kwargs["setup"], kwargs["pipeline"])
+                record = joined_chart_provider._identity(
+                    files.read_json(manifest),
+                    photo.read_bytes(),
+                    guide.read_bytes(),
+                    io.BytesIO(),
+                    job.PIPELINE,
+                )
+                record.update(
+                    state="completed",
+                    attempts=1,
+                    returncode=0,
+                    thread_id="00000000-0000-4000-8000-000000000001",
+                    sheet_sha256=files.digest(sheet),
+                    generated_sha256=files.digest(sheet),
+                    sheet_size=guided_provider._sheet(sheet.read_bytes()),
+                )
+                (account_dir / "guided-paint").mkdir()
+                files.atomic_json(account_dir / "guided-paint/receipt.json", record)
+                return {"sheet": sheet, "provenance": record}
+
+            args = (
+                out,
+                source,
+                base,
+                files.read_json(base / "settings.json"),
+                reg,
+                seal["visual_brief"],
+                seal["receipt"],
+                None,
+            )
+            with (
+                patch.object(
+                    joined_chart_provider,
+                    "generate_chart",
+                    side_effect=synthetic_transport,
+                ) as fake,
+                patch(
+                    "requests.sessions.Session.request",
+                    side_effect=AssertionError("remote request"),
+                ),
+            ):
+                meta = job._chart_finish(args, setup, account, lambda stage: None)
+                self.assertEqual(fake.call_count, 1)
+            self.assertTrue(job.valid(out, meta))
+            self.assertEqual(meta["appearance_mode"], "guided_chart")
+            self.assertEqual(
+                files.digest(out / "shape-master.glb"),
+                files.digest(base / "provider-native.glb"),
+            )
+            self.assertEqual(
+                files.digest(out / "inferred-paint.png"), files.digest(sheet)
+            )
+            self.assertEqual(
+                files.read_json(out / "chart-paint.json")["locked_changed"], 0
+            )
+
     def test_real_composer_emits_an_inferred_alternative_with_zero_reposts(self):
         import base64
         import json
