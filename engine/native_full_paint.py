@@ -6,9 +6,14 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import trimesh
 from PIL import Image
 from scipy import ndimage
+from scipy.optimize import minimize
+from scipy.signal import find_peaks
 from scipy.spatial import cKDTree
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import maximum_flow, breadth_first_order
 
 from engine import guided_texture as gt
 from engine import native_region_paint as native
@@ -167,9 +172,213 @@ def _same_shape(mesh, common):
             raise ValueError("Different native and registered triangle corners")
 
 
+def _panel_matte(rgb):
+    """Estimate material against a nearly uniform neutral background, without the mesh."""
+    edges = np.concatenate(
+        [a.reshape(-1, 3) for a in (rgb[:8], rgb[-8:], rgb[:, :8], rgb[:, -8:])]
+    )
+    low, high = np.quantile(edges, [0.01, 0.99], axis=0)
+    if min(low) < 244 or max(high - low) > 5:
+        raise ValueError("Framing recovery requires a uniform light background")
+    diff = np.maximum(low - rgb, rgb - high).max(axis=2)
+    weak = diff > 1
+    strong = diff > 17
+    if strong.sum() < 300:
+        raise ValueError("Insufficient independent contrast to calibrate framing")
+    classes = np.where(weak, cv2.GC_PR_FGD, cv2.GC_PR_BGD).astype(np.uint8)
+    classes[strong] = cv2.GC_FGD
+    classes[[0, -1], :] = cv2.GC_BGD
+    classes[:, [0, -1]] = cv2.GC_BGD
+    # Deep background-coloured interiors remain available as genuine openings.
+    cavities = ndimage.binary_fill_holes(weak) & ~weak
+    classes[ndimage.distance_transform_edt(cavities) >= 3] = cv2.GC_BGD
+    cv2.setRNGSeed(1)
+    cv2.grabCut(
+        rgb,
+        classes,
+        None,
+        np.zeros((1, 65)),
+        np.zeros((1, 65)),
+        2,
+        cv2.GC_INIT_WITH_MASK,
+    )
+    mask = (classes == cv2.GC_FGD) | (classes == cv2.GC_PR_FGD)
+    labels, k = ndimage.label(mask)
+    keep = np.bincount(labels.ravel(), minlength=k + 1) >= 8
+    keep[0] = False
+    return keep[labels]
+
+
+def _similarity(mask, target):
+    """Fit only shared 2-D camera framing: translation, isotropic scale and roll."""
+
+    def box(m):
+        y, x = np.nonzero(m)
+        if not len(x) or min(np.ptp(x), np.ptp(y)) < 16:
+            raise ValueError("Missing calibrated panel silhouette")
+        span = np.array([np.ptp(x), np.ptp(y)])
+        return np.array([x.min(), y.min()]) + span / 2, span
+
+    center, span = box(mask)
+    aim, extent = box(target)
+    ratio = extent / span
+    if (
+        np.any(center - span / 2 < 3)
+        or np.any(center + span / 2 > gt.SIZE - 4)
+        or np.max(abs(center - aim)) > 0.12 * gt.SIZE
+        or min(ratio) < 0.72
+        or max(ratio) > 1.34
+        or max(ratio) / min(ratio) > 1.12
+    ):
+        raise ValueError("Panel size, aspect, crop or displacement is incompatible")
+    scale = np.dot(span, extent) / np.dot(span, span)
+    side = gt.SIZE // 2
+
+    def down(m):
+        return cv2.resize(
+            m.astype(np.float32), (side, side), interpolation=cv2.INTER_AREA
+        )
+
+    fixed, moving = down(target), down(mask)
+
+    def matrix(p):
+        roll, x, y, ds = p
+        result = cv2.getRotationMatrix2D(tuple(center), roll, scale * ds)
+        result[:, 2] += aim - center + [x, y]
+        return result
+
+    def objective(p):
+        m = matrix(p)
+        m[:, 2] *= side / gt.SIZE
+        test = cv2.warpAffine(moving, m, (side, side))
+        return -np.minimum(test, fixed).sum() / np.maximum(test, fixed).sum()
+
+    t = minimize(
+        objective,
+        [0, 0, 0, 1],
+        method="Powell",
+        bounds=[
+            (-5, 5),
+            (-0.02 * gt.SIZE, 0.02 * gt.SIZE),
+            (-0.02 * gt.SIZE, 0.02 * gt.SIZE),
+            (0.985, 1.015),
+        ],
+        options={"maxiter": 8, "xtol": 0.005},
+    ).x
+    return matrix(t), float(t[0])
+
+
+def _interior_landmarks(depth, target, rgb, aligned):
+    """Compare cross-body depth breaks against independent, coherent colour transitions."""
+    rows = np.flatnonzero(target.any(axis=1))
+    n = len(rows)
+    geometry = np.zeros((n, 5))
+    appearance = np.zeros_like(geometry)
+    intensity = rgb.mean(axis=2)
+    for i, y in enumerate(rows):
+        x = np.flatnonzero(target[y] & aligned[y])
+        if len(x) < 12:
+            continue
+        cuts = np.quantile(x, [0.18, 0.30, 0.44, 0.56, 0.70, 0.82]).astype(int)
+        for j, (left, right) in enumerate(zip(cuts, cuts[1:])):
+            part = x[(x >= left) & (x <= right)]
+            if len(part):
+                geometry[i, j] = np.median(depth[y, part])
+                appearance[i, j] = np.median(intensity[y, part])
+    slope = np.gradient(ndimage.gaussian_filter1d(geometry, 2, axis=0), axis=0)
+    curve = np.median(abs(np.gradient(slope, axis=0)), axis=1)
+    photo = np.median(
+        abs(np.gradient(ndimage.gaussian_filter1d(appearance, 1.3, axis=0), axis=0)),
+        axis=1,
+    )
+    curve[:6] = curve[-6:] = 0
+    photo[:6] = photo[-6:] = 0
+    geo = find_peaks(
+        curve,
+        distance=max(1, int(0.06 * n)),
+        prominence=max(1e-7, np.quantile(curve, 0.90)),
+    )[0]
+    light = find_peaks(photo, distance=5, prominence=max(1, np.quantile(photo, 0.68)))[
+        0
+    ]
+    geo = geo[(geo > 0.025 * n) & (geo < 0.975 * n)]
+    if len(geo) < 2 or not len(light):
+        raise ValueError("Insufficient distinct interior geometry landmarks")
+    strongest = geo[np.argsort(curve[geo])[-6:]]
+    distances = np.min(abs(strongest[:, None] - light[None, :]), axis=1) / n
+    matched = strongest[distances <= 0.02]
+    if (
+        len(matched) < 2
+        or np.ptp(matched) < 0.25 * n
+        or (distances <= 0.02).mean() < 0.75
+    ):
+        raise ValueError("Independent interior geometry landmarks disagree")
+    return {
+        "native_height_fractions": (strongest / n).tolist(),
+        "nearest_paint_edge_fraction": distances.tolist(),
+    }
+
+
+def _calibrate_panel(panel, obj, depth):
+    # Expanding the framing range must never repair a genuine aperture mismatch.
+    if np.any(ndimage.binary_fill_holes(obj) & ~obj):
+        raise ValueError(
+            "Native openings require the original strict panel registration"
+        )
+    rgb = np.asarray(panel.resize((gt.SIZE, gt.SIZE), Image.Resampling.LANCZOS))
+    gen = _panel_matte(rgb)
+    matrix, roll = _similarity(gen, obj)
+    size = (gt.SIZE, gt.SIZE)
+    aligned = (
+        cv2.warpAffine(gen.astype(np.uint8), matrix, size, flags=cv2.INTER_NEAREST) > 0
+    )
+    painted = cv2.warpAffine(rgb, matrix, size, borderValue=(255, 255, 255))
+    score = gt._iou(obj, aligned)
+    holes = gt._hole_agreement(obj, aligned)
+    if score < 0.94 or holes < 0.65:
+        raise ValueError(
+            f"Calibrated silhouette {score:.3f}, opening agreement {holes:.3f}"
+        )
+    bands = []
+    for a, b in [(obj, aligned), (obj.T, aligned.T)]:
+        bins = np.array_split(np.flatnonzero(a.any(axis=1)), 8)
+        bands.extend(gt._iou(a[rows], b[rows]) for rows in bins)
+
+    def errors(a, b):
+        edge = a ^ ndimage.binary_erosion(a)
+        other = b ^ ndimage.binary_erosion(b)
+        return np.quantile(ndimage.distance_transform_edt(~edge)[other], 0.95)
+
+    residual = max(errors(obj, aligned), errors(aligned, obj))
+    span = max(np.ptp(axis) for axis in np.nonzero(obj))
+    if min(bands) < 0.82 or residual > 0.018 * span:
+        raise ValueError("Local calibrated outline or silhouette landmark mismatch")
+    landmarks = _interior_landmarks(depth, obj, painted, aligned)
+    nearest = ndimage.distance_transform_edt(
+        ~aligned, return_distances=False, return_indices=True
+    )
+    color = painted[tuple(nearest)].astype(np.float32)
+    low = cv2.GaussianBlur(color, (0, 0), 0.032 * span)
+    return (
+        np.clip((color + 8) / (low + 8), 0.36, 1.35),
+        ndimage.distance_transform_edt(obj & aligned),
+        {
+            "method": "bounded_similarity",
+            "raw_iou": gt._iou(obj, gen),
+            "result_iou": score,
+            "opening_agreement": holes,
+            "roll_degrees": roll,
+            "fit": matrix.tolist(),
+            "band_iou_min": min(bands),
+            "outline_residual_px95": float(residual),
+            "depth_landmarks": landmarks,
+        },
+    )
+
+
 def _field(mesh, sheet, points, normals):
-    """Transfer local detail per view. Transfer broad chroma only when both views agree."""
-    fields, weights, hues = [], [], []
+    """Sample independent RGB pigment fields and geometric support on native texels."""
+    fields, weights = [], []
     stats = {}
     for i, (name, angle) in enumerate(gt.ANGLES.items()):
         b, center, scale, ids, _, depth = gt._view(mesh, angle)
@@ -181,7 +390,12 @@ def _field(mesh, sheet, points, normals):
         try:
             detail, border, stats[name] = gt._register_panel(panel, ids >= 0)
         except ValueError as err:
-            raise NativeFullRegistrationError(f"{name}: {err}") from err
+            try:
+                detail, border, stats[name] = _calibrate_panel(panel, ids >= 0, depth)
+            except ValueError as fit_error:
+                raise NativeFullRegistrationError(
+                    f"{name}: {err}; {fit_error}"
+                ) from fit_error
         q = points @ b.T
         xy = (q[:, :2] - center[:2]) * [scale, -scale] + gt.SIZE / 2
         x, y = np.rint(xy).astype(int).clip(0, gt.SIZE - 1).T
@@ -194,37 +408,79 @@ def _field(mesh, sheet, points, normals):
             (gt.SIZE, gt.SIZE),
             borderValue=(255, 255, 255),
         )
-        valid = (border > 0).astype(np.float32)
-        sigma = 0.032 * max(np.ptp(axis) for axis in np.nonzero(valid))
-        coverage = cv2.GaussianBlur(valid, (0, 0), sigma)
-        low = cv2.GaussianBlur(aligned * valid[:, :, None], (0, 0), sigma)
-        low /= np.maximum(coverage[:, :, None], 1e-6)
-        hues.append(gt._sample(low, xy))
-        fields.append(gt._sample(detail, xy))
+        # Remove only a weak directional studio component. Gloss and roughness
+        # remain native PBR data; a single view cannot separate all illumination.
+        lamp = gt._norm(np.array([[-0.4, 0.66, 1.0]]))[0] @ b
+        irradiance = 0.85 + 0.15 * np.clip(normals @ lamp, 0, 1)
+        sample = gt._sample(aligned, xy)
+        fields.append(
+            np.clip(
+                (sample + 14.025) * irradiance[:, None] ** (-1 / 2.4) - 14.025, 0, 255
+            )
+        )
         weights.append(w)
         stats[name]["effective_texels"] = int((w > 0.5).sum())
-    wa, wb = weights
-    primary = (wa >= wb)[:, None]
-    detail = np.where(primary, fields[0], fields[1])
-    hue = np.where(primary, hues[0], hues[1])
-    strength = np.clip((np.maximum(wa, wb) - 0.1) / 0.68, 0, 1)
-    # No mixture of competing layouts. Keep the native pigment at disputed seams.
-    conflict = (np.max(abs(fields[0] - fields[1]), axis=1) > 0.32) & (
-        np.minimum(wa, wb) > 0.35
+    return fields, weights, stats
+
+
+def _cut_faces(cost_a, cost_b, edges, seam_cost):
+    """Choose a single material label on each 3D triangle, including across UV seams."""
+    n = len(cost_a)
+    vertices = np.arange(n)
+    start, end = n, n + 1
+    a, b = edges.T
+    rows = np.concatenate((np.full(n, start), vertices, a, b))
+    cols = np.concatenate((vertices, np.full(n, end), b, a))
+    values = np.rint(
+        64 * np.concatenate((cost_b, cost_a, seam_cost, seam_cost))
+    ).astype(np.int32)
+    graph = coo_matrix((values, (rows, cols)), shape=(n + 2, n + 2)).tocsr()
+    residual = graph - maximum_flow(graph, start, end, method="dinic").flow
+    residual.eliminate_zeros()
+    chosen = np.zeros(n + 2, bool)
+    chosen[
+        breadth_first_order(residual, start, directed=True, return_predecessors=False)
+    ] = True
+    return chosen[:n]
+
+
+def _choose_surface(mesh, face, fields, weights, original, locked):
+    # Face adjacency respects occluding body parts even when they project onto
+    # the same point. Rejoin identical world positions split at atlas seams.
+    _, index = np.unique(mesh.vertices, axis=0, return_inverse=True)
+    edge = trimesh.graph.face_adjacency(faces=index[mesh.faces])
+    n = len(mesh.faces)
+    counts = np.bincount(face, minlength=n)
+
+    def average(value):
+        return np.bincount(face, weights=value, minlength=n) / np.maximum(counts, 1)
+
+    wa, wb = [np.where(locked, 0, w) for w in weights]
+    qa, qb = average(wa), average(wb)
+    disagreement = average(np.max(abs(fields[0] - fields[1]), axis=1)) / 30
+    # Preserve a camera's coherent motif until a physically supported, cheap seam.
+    first = _cut_faces(
+        3 * (1 - qa) ** 2 + 80 * ((qa < 0.14) & (qb > 0.3)),
+        3 * (1 - qb) ** 2 + 80 * ((qb < 0.14) & (qa > 0.3)),
+        edge,
+        2 + disagreement[edge].mean(axis=1),
     )
-    strength[conflict] = 0
-
-    def chroma(rgb):
-        return rgb - (rgb @ np.array([0.2126, 0.7152, 0.0722]))[:, None]
-
-    chroma_error = np.max(abs(chroma(hues[0]) - chroma(hues[1])), axis=1)
-    broad = np.clip((np.minimum(wa, wb) - 0.45) / 0.35, 0, 1) * np.clip(
-        (32 - chroma_error) / 20, 0, 1
+    one = first[face]
+    chosen = np.where(one[:, None], fields[0], fields[1])
+    support = np.where(one, wa, wb)
+    quality = average(support)
+    delta = average(np.max(abs(chosen - original), axis=1)) / 30
+    use = _cut_faces(
+        12 * (1 - quality) ** 2 + 100 * (quality < 0.03),
+        12 * quality**2 + 100 * (quality > 0.74),
+        edge,
+        2 + delta[edge].mean(axis=1),
     )
-    return detail, chroma(hue), strength, broad, stats
+    apply = use[face] & (support > 0.16) & ~locked
+    return chosen, apply, one
 
 
-def _copy_check(mesh, texture):
+def _copy_check(mesh, texture, observation=None):
     """Render unlit native albedo in the source-registered frame on the exact mesh."""
     pair = []
     try:
@@ -248,9 +504,10 @@ def _copy_check(mesh, texture):
         return {"status": "inconclusive", "reason": str(err)}
     first, second = pair
     signal = copy_test._signal(first)
+    focal = "focal" in (observation or {}).get("observed_face_cues", {})
     if (
         signal["rms_rgb"] < 3
-        or signal["self_reflection"] >= 0.75
+        or (signal["self_reflection"] >= 0.75 and not focal)
         or signal["self_translation"] >= 0.78
         or signal["gradient_minor_fraction"] < 0.055
     ):
@@ -295,22 +552,14 @@ def _project(mesh, albedo, matte, camera, sheet):
         (ids >= 0) & (reversed_ids >= 0) & (ids != len(mesh.faces) - 1 - reversed_ids)
     )
     protected = lock | ndimage.binary_dilation(overlap, iterations=1)
-    detail, proposed_chroma, strength, broad, stats = _field(
-        mesh, sheet, points, normals
+    fields, weights, stats = _field(mesh, sheet, points, normals)
+    chosen, support, first = _choose_surface(
+        mesh, ids[y, x], fields, weights, albedo[y, x].astype(float), protected[y, x]
     )
-    # Feather into native albedo at the measured front, including UV seam charts.
-    strength *= np.clip(
-        (ndimage.distance_transform_edt(~protected)[y, x] - 1) / 5, 0, 1
-    )
-    support = strength > 0
     if support.sum() < max(32, round(len(y) * 0.005)):
         raise NativeFullReviewHold("No significant registered hidden surface")
-    base = albedo[y, x].astype(float)
-    base_chroma = base - (base @ np.array([0.2126, 0.7152, 0.0722]))[:, None]
-    # The guide can carry studio lighting. Retain native luminance and BRDF.
-    target = (base + broad[:, None] * (proposed_chroma - base_chroma)) * detail
     updated = albedo.copy()
-    updated[y, x] = np.clip(np.rint(base + strength[:, None] * (target - base)), 0, 255)
+    updated[y[support], x[support]] = np.rint(chosen[support])
     delta = updated.astype("int16") - albedo.astype("int16")
     changed = np.any(delta[y, x] != 0, axis=1)
     if changed.sum() < 32:
@@ -334,7 +583,10 @@ def _project(mesh, albedo, matte, camera, sheet):
         "changed_uv": int(changed.sum()),
         "supported_uv": int(support.sum()),
         "total_uv": len(x),
-        "two_view_chroma_uv": int(np.sum(support & (broad > 0))),
+        "single_view_uv": {
+            name: int((support & part).sum())
+            for name, part in zip(gt.ANGLES, (first, ~first))
+        },
     }
 
 
@@ -445,14 +697,14 @@ def paint_native_full(
     updated, info = _project(mesh, old, mask, registration["camera_frame"], sheet)
     with gt._stage(Path(output_dir)) as stage:
         reopened, actual, other = _save(doc, blob, raw, updated, stage)
-        copy = _copy_check(_registered(reopened, registration), actual)
+        copy = _copy_check(_registered(reopened, registration), actual, obs)
         distinct = _require_copy_evidence(copy, obs)
         if any(
             digest(path) != ids[k] for k, path in paths.items()
         ) or guide_bytes != gt._single(folder / "guide.json", 65536):
             raise ValueError("Input changed during the transfer")
         info.update(
-            method="native-full-guided-v1",
+            method="native-full-guided-v2",
             appearance="needs_review",
             source_image_sha256=ids["source"],
             source_glb=ids["native"],

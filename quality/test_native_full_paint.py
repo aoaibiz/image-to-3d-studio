@@ -149,7 +149,9 @@ class NativeFullTests(unittest.TestCase):
             self.assertEqual(result["appearance"], "needs_review")
             self.assertFalse(result["source_rear_observed"])
             self.assertGreater(result["changed_uv"], 100)
-            self.assertGreater(result["two_view_chroma_uv"], 0)
+            self.assertEqual(
+                sum(result["single_view_uv"].values()), result["supported_uv"]
+            )
             self.assertEqual(
                 (result["locked_changed"], result["unsupported_surface_changed"]),
                 (0, 0),
