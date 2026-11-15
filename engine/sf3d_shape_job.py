@@ -31,15 +31,12 @@ def consent(setup, *, pipeline=SF3D_PIPELINE):
         config = files.read_json(setup)
     except (OSError, ValueError):
         config = None
-    from studio.configure import agreement, ENGINES
+    from studio.configure import ENGINES, valid_agreement
 
     if (
         pipeline not in (SF3D_PIPELINE, "sf3d-codex-observed-v1")
         or pipeline not in ENGINES.values()
-        or json.dumps(config, sort_keys=True)
-        != json.dumps(
-            {"pipeline": pipeline, "agreement": agreement(pipeline)}, sort_keys=True
-        )
+        or not valid_agreement(config, pipeline)
     ):
         raise ConsentError(
             "公式Spaceへの前景画像送信と匿名利用枠の使用を、初回設定で許可してください。"
@@ -79,7 +76,7 @@ def _matte(source, work, key):
     return matte, selection, metadata
 
 
-def oriented_glb(native, target):
+def _oriented_bytes(native):
     """Rotate the scene roots as rigid objects; copy the original binary chunk verbatim."""
     raw = Path(native).read_bytes()
     n, kind = struct.unpack_from("<II", raw, 12)
@@ -101,13 +98,22 @@ def oriented_glb(native, target):
     data = json.dumps(doc, ensure_ascii=True, separators=(",", ":")).encode()
     data += b" " * ((-len(data)) % 4)
     bin_chunk = raw[20 + n :]
-    target.write_bytes(
+    return (
         struct.pack(
             "<4sIIII", b"glTF", 2, 20 + len(data) + len(bin_chunk), len(data), kind
         )
         + data
         + bin_chunk
     )
+
+
+def oriented_glb(native, target):
+    target.write_bytes(_oriented_bytes(native))
+
+
+def oriented_digest(native):
+    import hashlib
+    return hashlib.sha256(_oriented_bytes(native)).hexdigest()
 
 
 def finalize(native, matte, selection, matte_meta, receipt, out):

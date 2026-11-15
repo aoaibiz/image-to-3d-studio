@@ -35,15 +35,12 @@ StageError = local_shape_job.StageError
 
 
 def _consent(setup, pipeline=GUIDED_PIPELINE):
-    from studio.configure import agreement
+    from studio.configure import valid_agreement
 
     try:
         if setup.stat().st_size > 32768:
             raise ValueError("設定が無効です。")
-        expected = {"pipeline": pipeline, "agreement": agreement(pipeline)}
-        valid = json.dumps(sg.read_json(setup), sort_keys=True) == json.dumps(
-            expected, sort_keys=True
-        )
+        valid = valid_agreement(sg.read_json(setup), pipeline)
     except (OSError, ValueError):
         valid = False
     if not valid:

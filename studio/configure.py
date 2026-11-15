@@ -16,10 +16,18 @@ ENGINES = {SF3D_PIPELINE: SF3D_PIPELINE, "triposr": PIPELINE, "triposg": SHAPE_P
            "sf3d-observed": SF3D_OBSERVED_PIPELINE}
 
 
+def legacy_sf3d_observed_agreement():
+    return {"schema": 1, "shape": SF3D_AGREEMENT, "appearance": OBSERVED_AGREEMENT,
+            "max_shape_inferences_per_job": 1}
+
+
 def agreement(pipeline):
     if pipeline == SF3D_OBSERVED_PIPELINE:
-        return {"schema": 1, "shape": SF3D_AGREEMENT, "appearance": OBSERVED_AGREEMENT,
-                "max_shape_inferences_per_job": 1}
+        appearance = {**OBSERVED_AGREEMENT,
+                      "send": [OBSERVED_AGREEMENT["send"][0],
+                               "normalized source photo and either two rendered geometry views or one source-anchored continuous surface chart for inferred paint"],
+                      "paint_guide_recipes": ["two-rendered-geometry-views", "source-anchored-surface-chart"]}
+        return {**legacy_sf3d_observed_agreement(), "schema": 2, "appearance": appearance}
     if pipeline == SF3D_PIPELINE:
         return SF3D_AGREEMENT
     if pipeline == OBSERVED_PIPELINE:
@@ -29,6 +37,14 @@ def agreement(pipeline):
     else:
         from engine.guided_provider import AGREEMENT
     return AGREEMENT
+
+
+def valid_agreement(doc, pipeline):
+    accepted = [agreement(pipeline)]
+    if pipeline == SF3D_OBSERVED_PIPELINE:
+        accepted.append(legacy_sf3d_observed_agreement())
+    return any(json.dumps(doc, sort_keys=True) == json.dumps(
+        {"pipeline": pipeline, "agreement": value}, sort_keys=True) for value in accepted)
 
 
 def read_pipeline(directory):
@@ -41,8 +57,7 @@ def read_pipeline(directory):
             "生成設定が無効です。studio.configure でローカルエンジンを設定し直してください。"
         )
     if doc["pipeline"] in SF3D_PIPELINES:
-        expected = {"pipeline": doc["pipeline"], "agreement": agreement(doc["pipeline"])}
-        if json.dumps(doc, sort_keys=True) != json.dumps(expected, sort_keys=True):
+        if not valid_agreement(doc, doc["pipeline"]):
             raise ValueError("選択した方式の送信先と利用枠を初回設定で確認してください。")
     if doc["pipeline"] in GUIDED_PIPELINES:
         if doc.get("agreement") != agreement(doc["pipeline"]):
@@ -84,7 +99,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", choices=ENGINES, required=True)
     parser.add_argument("--jobs-dir", type=Path, default=ROOT / "jobs" / "studio")
-    parser.add_argument("--allow-send-to-openai", action="store_true", help="Send the photo and two geometry guides to OpenAI using your ChatGPT plan.")
+    parser.add_argument("--allow-send-to-openai", action="store_true", help="Allow one inferred paint request to OpenAI with the source photo and two geometry views, or a single source-anchored surface chart in sf3d-observed.")
     parser.add_argument("--chatgpt-photo-analysis", action="store_true", help="Also send the normalized photo for one ChatGPT text observation per job.")
     parser.add_argument("--allow-official-space", action="store_true", help="Send the segmented photo to Stability AI on Hugging Face using your anonymous ZeroGPU quota.")
     args = parser.parse_args()
