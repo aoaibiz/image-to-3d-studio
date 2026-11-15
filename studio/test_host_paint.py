@@ -141,7 +141,70 @@ class NativeHostTests(unittest.TestCase):
         self.assertEqual(claim["prompt"], actual)
         self.assertEqual(claim["visual_brief_sha256"], "b"*64)
         self.assertEqual(request["prompt_sha256"], hashlib.sha256(actual.encode()).hexdigest())
-        with patch("engine.guided_provider.appearance_prompt", create=True, return_value=(paint.PROMPT, "c"*64)):
+        with patch("engine.guided_provider.appearance_prompt", create=True, side_effect=AssertionError("must use sealed prompt")):
+            self.assertEqual(paint.prepare(work, source, guide, layout), request)
             with self.assertRaises(ValueError):
-                paint.prepare(work, source, guide, layout)
+                paint.prepare(work, source, guide, {**layout, "visual_brief": {"fixture": 2}})
+            with self.assertRaises(ValueError):
+                paint.prepare(work, source, guide, {**layout, "camera": {"rear": [0, 0]}})
         self.assertFalse(paint.claim(work, "fixture")["generate_once"])
+        paint.submit(work, claim["claim_id"], request["input_sha256"],
+                     hashlib.sha256(self.png).hexdigest(), "fixture", self.png)
+        self.assertEqual(paint.result(work, request)["provenance"]["prompt_sha256"], request["prompt_sha256"])
+        (work / "host-input/prompt.txt").write_text("changed")
+        with self.assertRaises(ValueError):
+            paint.claim(work, "fixture")
+        with self.assertRaises(ValueError):
+            paint.submit(work, claim["claim_id"], request["input_sha256"],
+                         hashlib.sha256(self.png).hexdigest(), "fixture", self.png)
+
+    def test_old_brief_claim_survives_new_template_and_never_redispatches(self):
+        from engine.guided_provider import legacy_appearance_prompt
+        from engine.triposg_cpu import atomic_json
+
+        for extended in (False, True):
+            with self.subTest(extended=extended):
+                files = self.root / str(extended)
+                work = files / "output/local-guided-work"
+                folder, guides = work / "host-input", work / "guides"
+                folder.mkdir(parents=True)
+                guides.mkdir()
+                model = work / "base/model.glb"
+                model.parent.mkdir()
+                model.write_bytes(b"fixture native mesh")
+                source, guide = files / "input.image", guides / "guides.png"
+                for path in [source, guide, folder / "photo.png"]:
+                    path.write_bytes(self.png)
+                sha = digest(source)
+                brief = dict(method="photo-appearance-qwen3-vl-2b-v1", source_sha256=sha,
+                             visible_palette=["blue","white"], optical_finish_candidate="glossy",
+                             layout_candidate="focal_and_repeated", unseen_surface_observed=False,
+                             observed_face_cues={"focal":{"family":"abstract","location":"center"},
+                                                 "repeated":{"family":"botanical","location":"upper_border"}})
+                if extended:
+                    brief.update(visible_structures=[], visible_surround={"color":"ivory","pigment_layout":"uniform"})
+                layout = {"photo_sha":sha, "model_sha":digest(model), "guide_sha":digest(guide), "visual_brief":brief}
+                atomic_json(guides / "request-guide.json", layout)
+                old, brief_sha = legacy_appearance_prompt(paint.LEGACY_PROMPT, layout, sha)
+                # Frozen output SHA of the builder at 41bc035, before structural sentences.
+                old_sha = "dec0ed788d704f2a921844a2ceee4ca3749121dafdc0b1eebd328a07d135bde2"
+                self.assertEqual(hashlib.sha256(old.encode()).hexdigest(), old_sha)
+                record = dict(photo_sha256=sha, geometry_sha256=layout["model_sha"], guide_sha256=layout["guide_sha"],
+                              prompt_sha256=old_sha, visual_brief_sha256=brief_sha, uploaded_png_sha256=[sha, sha])
+                record["input_sha256"] = hashlib.sha256(json.dumps(
+                    [sha, sha, layout["model_sha"], sha, old_sha, brief_sha]).encode()).hexdigest()
+                atomic_json(folder / "request.json", record)
+                (folder / "prompt.txt").write_bytes(old.encode())
+                atomic_json(work / "host-claim.json", {"claim_id":"x"*43,"request_sha256":record["input_sha256"]})
+                with patch("engine.guided_provider.appearance_prompt", side_effect=AssertionError("must not call current recipe")):
+                    self.assertEqual(paint.prepare(work, source, guide, layout),record)
+                    self.assertFalse(paint.claim(work,"fixture")["generate_once"])
+                    paint.submit(work, "x"*43, record["input_sha256"], sha, "historical_fixture", self.png)
+                    self.assertEqual(paint.result(work,record)["provenance"]["sheet_sha256"],sha)
+                atomic_json(guides / "request-guide.json", {**layout,"visual_brief":{**brief,"visible_palette":["blue"]}})
+                with self.assertRaises((ValueError, RuntimeError)):
+                    paint.claim(work, "fixture")
+                atomic_json(guides / "request-guide.json", layout)
+                model.write_bytes(b"different model")
+                with self.assertRaises(ValueError):
+                    paint.submit(work, "x"*43, record["input_sha256"], sha, "historical_fixture", self.png)
