@@ -89,7 +89,7 @@ import { profileSchema, reviewSchema } from "./schemas.mjs";
 import { sendJson } from "./service.mjs";
 register(
   "inspect",
-  "Run optional cat-specific geometric inspection; this invalidates any prior manual review.",
+  "Measure cross-sections in 1–6 named regions, or use the cat head/body profile. A new inspection invalidates the prior manual review.",
   { jobId: id, profile: profileSchema },
   ({ jobId, profile }) => sendJson(jobPath(jobId) + "/inspect", { profile }),
 );

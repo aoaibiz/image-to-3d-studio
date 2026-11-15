@@ -13,13 +13,15 @@
 
 `python quality/inspection.py model.glb --profile profile.json --validator path/to/gltf_validator`
 
-The profile is optional. Without an explicitly selected cat, axes, and head/body regions, geometry is `review`. Coordinates and levels are in world space after glTF node transforms; axes are 0=X, 1=Y, 2=Z. The caller must derive segmentation and thresholds from the actual subject and reference. Example shape only (do not reuse these coordinates blindly):
+通常の生成は画像1枚で進みます。特定部位の厚みを検査する場合、CLI または MCP の `inspect` に `measured-parts` を渡せます。モデルと元画像で部位を特定し、1〜6部位にそれぞれの範囲、異なる高さ3〜8点、最小厚み比を指定します。部位名は1〜48文字で、日本語も使えます。従来の `subject: cat` には引き続き `head` と `body` を指定します。プロファイルがないと部位断面は `review` です。
+
+以下は幅1、厚さ0.02の薄い板を想定した例です。座標は glTF ノード変換後のワールド座標、軸は 0=X、1=Y、2=Z です。`up_axis` に垂直な面で切り、`depth_axis` 方向に測ります。実モデルの座標と用途に合わせて値を決めてください。
 
 ```json
-{"subject":"cat","up_axis":1,"depth_axis":2,"regions":{"head":{"bounds":[[-1,1],[1,2],[-0.6,0.6]],"levels":[1.2,1.5,1.8],"min_depth_ratio":0.2},"body":{"bounds":[[-1,1],[0,1],[-0.6,0.6]],"levels":[0.2,0.5,0.8],"min_depth_ratio":0.2}}}
+{"subject":"measured-parts","up_axis":1,"depth_axis":2,"regions":{"薄板":{"bounds":[[-0.6,0.6],[0,1],[-0.1,0.1]],"levels":[0.2,0.5,0.8],"min_depth_ratio":0.015}}}
 ```
 
-Depth ratio is the median depth of five local scans through a horizontal cross-section divided by that same section's measured width. This avoids a snug depth bound concealing flatness and reduces the influence of an off-center tail. Multiple overlapping contours or an open section require review when they do not already fail the thickness test; disconnected front/back plates cannot pass. The measurement is a heuristic and depends on correct segmentation and orientation; no automatic measurement proves resemblance. A failed section blocks geometry; insufficient data requires review. Passing is not a claim of visual fidelity. Unknown subjects such as legitimately thin products are not subject to a cat thickness rule. Animated/skinned/morph, compressed, sparse and external-buffer assets require manual review. This is not a full glTF parser.
+厚み比は断面内5か所の奥行きの中央値を同じ断面の幅で割った値です。各部位のしきい値を1断面でも下回ると `fail` です。開いた断面や判別しにくい重なりは `review` として表示します。`measured-parts` の上限は262,144面、候補三角形と断面の組み合わせは合計250,000組です。上限超過時も `review` になり、処理上の上限を造形不良として記録することはありません。外見と原画への一致は別途、同じ GLB の材質あり・無地の画像で検品します。スキン・アニメーション・モーフ、圧縮メッシュ、スパースアクセサー、外部バッファを含む場合は手動検品が必要です。
 
 Format status is independent: provide the official [Khronos glTF Validator CLI](https://github.com/KhronosGroup/glTF-Validator#command-line-tool-usage) to run its JSON report; otherwise it remains unknown. Appearance always remains pending human review of matching-hash material and clay views. The report contains a SHA-256 of the inspected file; rerun after any changes. Validator executable identity and provenance are the caller's responsibility.
 

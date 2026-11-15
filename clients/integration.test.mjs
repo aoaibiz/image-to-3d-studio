@@ -9,7 +9,7 @@ const id = "12345678-1234-4123-8123-123456789abc";
 const image = await readFile(
   new URL("../demo/product-cutout.png", import.meta.url),
 );
-let received;
+let received, inspected;
 const service = http.createServer(async (req, res) => {
   assert.equal(req.headers["x-studio-client"], "1");
   if (req.method === "POST" && req.url === "/api/jobs") {
@@ -28,6 +28,12 @@ const service = http.createServer(async (req, res) => {
   }
   if (req.url === `/api/jobs/${id}`)
     return res.end(JSON.stringify({ job: { id, status: "needs_review" } }));
+  if (req.method === "POST" && req.url === `/api/jobs/${id}/inspect`) {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    inspected = JSON.parse(Buffer.concat(chunks).toString());
+    return res.end(JSON.stringify({ job: { id, status: "needs_review" } }));
+  }
   if (req.url === `/api/jobs/${id}/artifacts/model.glb`)
     return res.end(Buffer.from("test-artifact"));
   if (req.url === "/api/doctor") return res.end(JSON.stringify({ ok: true }));
@@ -75,6 +81,27 @@ try {
       Buffer.from(JSON.parse(part.content[0].text).data, "base64").toString(),
       "test",
     );
+  });
+  await test("MCP inspect accepts named sections and rejects unbounded profiles", async () => {
+    const panel = {
+      bounds: [[-0.6, 0.6], [0, 1], [-0.1, 0.1]],
+      levels: [0.2, 0.5, 0.8],
+      min_depth_ratio: 0.015,
+    };
+    const profile = {
+      subject: "measured-parts", up_axis: 1, depth_axis: 2, regions: { 薄板: panel },
+    };
+    const measure = (profile) => client.callTool({
+      name: "inspect", arguments: { jobId: id, profile },
+    });
+    assert.equal((await measure(profile)).isError, undefined);
+    assert.deepEqual(inspected, { profile });
+    const tooMany = Object.fromEntries(Array.from({ length: 7 }, (_, i) => [`part${i}`, panel]));
+    for (const regions of [
+      {}, tooMany, { panel: { ...panel, levels: [0.2, 0.2, 0.2] } }, { panel, ["__proto__"]: panel },
+    ]) {
+      assert.equal((await measure({ ...profile, regions })).isError, true);
+    }
   });
 } finally {
   await client.close();

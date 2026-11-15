@@ -1,6 +1,13 @@
 """Conservative GLB geometry inspection; appearance always requires human review."""
 
-import argparse, hashlib, json, math, struct, subprocess, sys
+import argparse
+import hashlib
+import json
+import math
+import re
+import struct
+import subprocess
+from bisect import bisect_left, bisect_right
 from pathlib import Path
 
 
@@ -95,13 +102,19 @@ def accessor(doc, binary, index):
     return values
 
 
-def triangles(doc, binary):
+MAX_MEASURED_TRIANGLES = 262144
+MAX_MEASURED_INTERSECTIONS = 250000
+
+
+def triangles(doc, binary, max_faces=None):
     identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
     out = []
+    positions_read = 0
     if "skins" in doc or "animations" in doc:
         raise ValueError("animated or skinned geometry unsupported")
 
     def visit(i, parent, ancestors):
+        nonlocal positions_read
         if i in ancestors:
             raise ValueError("cycle in node graph")
         node = doc["nodes"][i]
@@ -112,7 +125,18 @@ def triangles(doc, binary):
                     raise ValueError("unsupported primitive")
                 if "extensions" in p:
                     raise ValueError("compressed or extended primitive unsupported")
-                points = accessor(doc, binary, p["attributes"]["POSITION"])
+                position = p["attributes"]["POSITION"]
+                if max_faces is not None:
+                    count = doc["accessors"][p.get("indices", position)]["count"]
+                    positions_read += doc["accessors"][position]["count"]
+                    if (
+                        count > (max_faces - len(out)) * 3
+                        or positions_read > 3 * max_faces
+                    ):
+                        raise ValueError(
+                            "Measured-parts input exceeds the bounded mesh size; manual geometry review required."
+                        )
+                points = accessor(doc, binary, position)
                 pts = [
                     tuple(
                         sum(m[c * 4 + r] * v[c] for c in range(3)) + m[12 + r]
@@ -146,59 +170,136 @@ def triangles(doc, binary):
     return out
 
 
-def inspect_geometry(tris, profile):
+def validate_profile(profile):
+    def finite(x):
+        try:
+            return type(x) in (float, int) and math.isfinite(x)
+        except OverflowError:
+            return False
+
+    if not isinstance(profile, dict) or set(profile) != {
+        "subject",
+        "up_axis",
+        "depth_axis",
+        "regions",
+    }:
+        raise ValueError("対象・上下軸・奥行き軸・測定する部位を指定してください。")
+    subject, axis, depth, regions = (
+        profile[k] for k in ("subject", "up_axis", "depth_axis", "regions")
+    )
     if (
-        not profile
-        or profile.get("subject") != "cat"
-        or profile.get("up_axis") not in (0, 1, 2)
-        or profile.get("depth_axis") not in (0, 1, 2)
-        or profile["up_axis"] == profile["depth_axis"]
+        subject not in ("cat", "measured-parts")
+        or type(axis) is not int
+        or type(depth) is not int
+        or axis not in (0, 1, 2)
+        or depth not in (0, 1, 2)
+        or axis == depth
     ):
-        return {
-            "status": "review",
-            "reason": "Explicit cat subject, distinct up/depth axes, and segmented head/body regions required.",
-        }
-    regions = profile.get("regions", {})
-    axis = profile["up_axis"]
-    depth = profile["depth_axis"]
-    results = {}
-    for name in ("head", "body"):
-        region = regions.get(name, {})
-        bounds = region.get("bounds")
-        levels = region.get("levels")
-        threshold = region.get("min_depth_ratio")
+        raise ValueError(
+            "cat または measured-parts と、異なる上下・奥行き軸を指定してください。"
+        )
+    if not isinstance(regions, dict) or not 1 <= len(regions) <= 6:
+        raise ValueError("測定する部位を1〜6個指定してください。")
+    if subject == "cat" and set(regions) != {"head", "body"}:
+        raise ValueError("猫には頭と胴の領域を両方指定してください。")
+    for name, region in regions.items():
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(r"[^\x00-\x20\x7f-\x9f]{1,48}", name)
+            or name in ("__proto__", "prototype", "constructor")
+        ):
+            raise ValueError("部位に1〜48文字の識別名を指定してください。")
+        if not isinstance(region, dict) or set(region) != {
+            "bounds",
+            "levels",
+            "min_depth_ratio",
+        }:
+            raise ValueError(
+                "部位ごとに範囲・断面・厚み比のしきい値を指定してください。"
+            )
+        bounds, levels, threshold = (
+            region[k] for k in ("bounds", "levels", "min_depth_ratio")
+        )
         if not (
             isinstance(bounds, list)
             and len(bounds) == 3
             and all(
                 isinstance(b, list)
                 and len(b) == 2
-                and all(isinstance(x, (int, float)) and math.isfinite(x) for x in b)
+                and all(finite(x) for x in b)
                 and b[0] < b[1]
                 for b in bounds
             )
             and isinstance(levels, list)
-            and len(levels) >= 3
-            and all(
-                isinstance(x, (int, float))
-                and math.isfinite(x)
-                and bounds[axis][0] < x < bounds[axis][1]
-                for x in levels
-            )
-            and isinstance(threshold, (int, float))
-            and math.isfinite(threshold)
+            and 3 <= len(levels) <= 8
+            and all(finite(x) and bounds[axis][0] < x < bounds[axis][1] for x in levels)
+            and finite(threshold)
             and 0 < threshold <= 1
         ):
-            return {
-                "status": "review",
-                "reason": f"{name} needs finite explicit world-space bounds, at least three interior levels and a depth ratio threshold.",
-            }
+            raise ValueError(
+                "有限の範囲、3〜8個の範囲内断面、0より大きく1以下の比率を指定してください。"
+            )
+        if subject == "measured-parts" and len(set(levels)) != len(levels):
+            raise ValueError(
+                "measured-parts の各部位には異なる高さの断面を指定してください。"
+            )
+
+
+def _sample_level(level, bounds, axis):
+    return level + (bounds[axis][1] - bounds[axis][0]) * 1e-8
+
+
+def _candidates(tris, regions, axis):
+    """Index only intersected planes; cap aggregate work for caller-defined profiles."""
+    if len(tris) > MAX_MEASURED_TRIANGLES:
+        raise ValueError(
+            "Measured-parts input exceeds the bounded mesh size; manual geometry review required."
+        )
+    planes = sorted(
+        (_sample_level(level, region["bounds"], axis), name, index)
+        for name, region in regions.items()
+        for index, level in enumerate(region["levels"])
+    )
+    heights = [item[0] for item in planes]
+    groups = {(name, index): [] for _, name, index in planes}
+    visits = 0
+    for tri in tris:
+        a, b, c = (vertex[axis] for vertex in tri)
+        start = bisect_left(heights, min(a, b, c))
+        stop = bisect_right(heights, max(a, b, c))
+        visits += stop - start
+        if visits > MAX_MEASURED_INTERSECTIONS:
+            raise ValueError(
+                "Triangle/plane intersection budget exceeded. Inspect fewer regions or levels per request."
+            )
+        for _, name, index in planes[start:stop]:
+            groups[name, index].append(tri)
+    return groups
+
+
+def inspect_geometry(tris, profile):
+    try:
+        validate_profile(profile)
+        regions = profile["regions"]
+        axis, depth = profile["up_axis"], profile["depth_axis"]
+        candidates = (
+            _candidates(tris, regions, axis)
+            if profile["subject"] == "measured-parts"
+            else None
+        )
+    except ValueError as exc:
+        return {"status": "review", "reason": str(exc)}
+    results = {}
+    for name, region in regions.items():
+        bounds, levels, threshold = (
+            region[k] for k in ("bounds", "levels", "min_depth_ratio")
+        )
         slices = []
-        for level in levels:
-            level_sample = level + (bounds[axis][1] - bounds[axis][0]) * 1e-8
+        for index, level in enumerate(levels):
+            level_sample = _sample_level(level, bounds, axis)
             width = 3 - axis - depth
             segments = []
-            for tri in tris:
+            for tri in tris if candidates is None else candidates[name, index]:
                 hits = []
                 for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
                     delta = b[axis] - a[axis]
@@ -268,6 +369,7 @@ def inspect_geometry(tris, profile):
             # A tiny measured thickness is a definite failure; thick-looking disconnected
             # plates or multiple overlapping contours can never become a pass.
             degree = {}
+            neighbors = {} if candidates is not None else None
             for a, b in segments:
                 keys = [
                     tuple(round(v / max(span, 1e-9), 7) for v in point)
@@ -277,7 +379,21 @@ def inspect_geometry(tris, profile):
                     continue
                 for key in keys:
                     degree[key] = degree.get(key, 0) + 1
+                if neighbors is not None:
+                    neighbors.setdefault(keys[0], []).append(keys[1])
+                    neighbors.setdefault(keys[1], []).append(keys[0])
             closed = all(n == 2 for n in degree.values())
+            if neighbors is not None:
+                closed = closed and bool(neighbors)
+                if closed:
+                    pending = [next(iter(neighbors))]
+                    seen = set()
+                    while pending:
+                        key = pending.pop()
+                        if key not in seen:
+                            seen.add(key)
+                            pending.extend(neighbors[key])
+                    ambiguous = ambiguous or len(seen) != len(neighbors)
             status = (
                 "fail"
                 if ratio < threshold
@@ -308,7 +424,7 @@ def inspect_geometry(tris, profile):
         if "fail" in statuses
         else ("review" if "review" in statuses else "pass"),
         "regions": results,
-        "note": "Geometric heuristic only; segment boundaries and thresholds require human judgment.",
+        "note": "Thickness screen for the chosen regions and levels. Appearance requires independent review.",
     }
 
 
@@ -342,8 +458,12 @@ def inspect(path, profile=None, validator=None):
         except (OSError, subprocess.TimeoutExpired, ValueError, KeyError) as e:
             result["format"] = {"status": "unknown", "reason": str(e)}
     try:
+        validate_profile(profile)
         _, doc, binary = load_glb(path)
-        result["geometry"] = inspect_geometry(triangles(doc, binary), profile)
+        limit = (
+            MAX_MEASURED_TRIANGLES if profile["subject"] == "measured-parts" else None
+        )
+        result["geometry"] = inspect_geometry(triangles(doc, binary, limit), profile)
     except (
         ValueError,
         KeyError,

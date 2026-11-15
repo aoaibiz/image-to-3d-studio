@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "image-to-3d-studio",
-  "version": "0.3.0-preview.1",
+  "version": "0.4.0-preview.1",
   "description": "Generate and inspect 3D models with a local studio service.",
   "author": { "name": "Image to 3D Studio" },
   "extensions": {"com.openai": {"onboardingSkill":"./skills/setup/SKILL.md", "interface":{"displayName":"Image to 3D Studio","shortDescription":"Local image to 3D","longDescription":"Submit images to a local service and inspect generated 3D assets.","developerName":"Image to 3D Studio","category":"Productivity","capabilities":["Read","Write"]}}}

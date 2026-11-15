@@ -1,4 +1,6 @@
-import math, sys, unittest
+import math
+import sys
+import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -115,6 +117,68 @@ class TestGeometry(unittest.TestCase):
 
     def test_no_orientation_or_segmentation_needs_review(self):
         self.assertEqual(inspect_geometry(tube(0.4), None)["status"], "review")
+
+    def test_named_torso_and_flat_panel_have_independent_thresholds(self):
+        p = profile()
+        p["subject"] = "measured-parts"
+        p["regions"] = {"torso": p["regions"]["body"]}
+        flat_torso = inspect_geometry(tube(0.015) + tube(0.4, center=2), p)
+        self.assertEqual(flat_torso["regions"]["torso"]["status"], "fail")
+        # A closed rectangular sheet has a legitimate 0.02 thickness/width ratio.
+        front = [(-0.5, 0, -0.01), (0.5, 0, -0.01), (0.5, 2, -0.01), (-0.5, 2, -0.01)]
+        back = [(x, y, 0.01) for x, y, _ in front]
+        panel = [
+            (front[0], front[1], front[2]),
+            (front[0], front[2], front[3]),
+            (back[0], back[2], back[1]),
+            (back[0], back[3], back[2]),
+        ]
+        for i in range(4):
+            j = (i + 1) % 4
+            panel.extend([(front[i], back[i], front[j]), (back[i], back[j], front[j])])
+        p["regions"] = {"薄板": {**p["regions"]["torso"], "min_depth_ratio": 0.015}}
+        result = inspect_geometry(panel, p)
+        self.assertEqual(result["regions"]["薄板"]["status"], "pass")
+        self.assertTrue(
+            all(
+                abs(s["depth_ratio"] - 0.02) < 1e-8
+                for s in result["regions"]["薄板"]["slices"]
+            )
+        )
+
+    def test_named_part_limits_and_duplicate_levels_require_review(self):
+        from unittest.mock import patch
+
+        p = profile()
+        p["subject"] = "measured-parts"
+        mesh = tube(0.4)
+        with patch("inspection.MAX_MEASURED_INTERSECTIONS", 3):
+            self.assertIn("budget", inspect_geometry(mesh, p)["reason"])
+            self.assertEqual(inspect_geometry(mesh, profile())["status"], "pass")
+        with patch("inspection.MAX_MEASURED_TRIANGLES", len(mesh) - 1):
+            oversized = inspect_geometry(mesh, p)
+            self.assertEqual(oversized["status"], "review")
+            self.assertIn("bounded mesh size", oversized["reason"])
+        p["regions"]["body"]["levels"] = [0.3] * 3
+        self.assertEqual(inspect_geometry(mesh, p)["status"], "review")
+
+    def test_separate_solids_in_one_named_region_are_ambiguous(self):
+        mesh = tube(0.45)
+        second = [tuple((x + 1.3, y, z) for x, y, z in tri) for tri in mesh]
+        region = profile()["regions"]["body"]
+        region["bounds"][0] = [-1, 2.5]
+        region["min_depth_ratio"] = 0.01
+        p = {
+            "subject": "measured-parts",
+            "up_axis": 1,
+            "depth_axis": 2,
+            "regions": {"piece": region},
+        }
+        report = inspect_geometry(mesh + second, p)
+        self.assertEqual(report["status"], "review")
+        self.assertTrue(
+            all(s["ambiguous"] for s in report["regions"]["piece"]["slices"])
+        )
 
     def test_missing_section_needs_review(self):
         p = profile()

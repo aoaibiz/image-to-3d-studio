@@ -1,6 +1,5 @@
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 from .process_group import ProcessGroup
@@ -331,67 +330,12 @@ class JobCore:
 
     @staticmethod
     def _validate_profile(profile):
-        def finite(value):
-            try:
-                return (
-                    isinstance(value, (int, float))
-                    and not isinstance(value, bool)
-                    and math.isfinite(value)
-                )
-            except OverflowError:
-                return False
+        from quality.inspection import validate_profile
 
-        if (
-            not isinstance(profile, dict)
-            or set(profile) != {"subject", "up_axis", "depth_axis", "regions"}
-            or profile["subject"] != "cat"
-            or type(profile["up_axis"]) is not int
-            or type(profile["depth_axis"]) is not int
-            or profile["up_axis"] not in (0, 1, 2)
-            or profile["depth_axis"] not in (0, 1, 2)
-            or profile["up_axis"] == profile["depth_axis"]
-        ):
-            raise JobError("猫の対象と異なる上下・奥行き軸を指定してください。")
-        regions = profile["regions"]
-        if not isinstance(regions, dict) or set(regions) != {"head", "body"}:
-            raise JobError("頭と胴の領域を両方指定してください。")
-        for region in regions.values():
-            if not isinstance(region, dict) or set(region) != {
-                "bounds",
-                "levels",
-                "min_depth_ratio",
-            }:
-                raise JobError("領域の範囲・断面・しきい値を指定してください。")
-            bounds, levels, ratio = (
-                region["bounds"],
-                region["levels"],
-                region["min_depth_ratio"],
-            )
-            if (
-                not isinstance(bounds, list)
-                or len(bounds) != 3
-                or any(
-                    not isinstance(b, list)
-                    or len(b) != 2
-                    or not all(finite(v) for v in b)
-                    or b[0] >= b[1]
-                    for b in bounds
-                )
-                or not isinstance(levels, list)
-                or not 3 <= len(levels) <= 8
-                or not all(
-                    finite(v)
-                    and bounds[profile["up_axis"]][0]
-                    < v
-                    < bounds[profile["up_axis"]][1]
-                    for v in levels
-                )
-                or not finite(ratio)
-                or not 0 < ratio <= 1
-            ):
-                raise JobError(
-                    "有限の範囲、3〜8個の範囲内断面、0より大きく1以下の比率を指定してください。"
-                )
+        try:
+            validate_profile(profile)
+        except ValueError as exc:
+            raise JobError(str(exc)) from exc
 
     def inspect(self, job_id, data):
         if not isinstance(data, dict) or set(data) != {"profile"}:

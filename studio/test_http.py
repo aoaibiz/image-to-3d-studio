@@ -1,5 +1,6 @@
 import http.client
 import json
+import shutil
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -85,6 +86,57 @@ class HttpTests(unittest.TestCase):
                         "/api/jobs/" + job + "/inspect",
                         {"X-Studio-Client": "1"},
                         b"{}",
+                    )[0],
+                    400,
+                )
+                demo = Path(__file__).resolve().parents[1] / "demo/generated"
+                output = core.directory / job / "output"
+                output.mkdir(exist_ok=True)
+                shutil.copyfile(demo / "model.glb", output / "model.glb")
+                shutil.copyfile(demo / "inspection.json", output / "inspection.json")
+                manifest = json.loads((demo / "views/manifest.json").read_text())
+                for filename in manifest["files"]:
+                    if "_front_" in filename:
+                        shutil.copyfile(demo / "views" / filename, output / filename)
+                (output / "manifest.json").write_text(json.dumps(manifest))
+                (output / "settings.json").write_text(
+                    json.dumps(
+                        {
+                            "input_sha256": core.get(job)["input_sha256"],
+                            "glb_sha256": manifest["sha256"],
+                        }
+                    )
+                )
+                region = {
+                    "bounds": [[-1, 1], [-1, 1], [-1, 1]],
+                    "levels": [-0.1, 0, 0.1],
+                    "min_depth_ratio": 0.1,
+                }
+                measured = {
+                    "subject": "measured-parts",
+                    "up_axis": 1,
+                    "depth_axis": 2,
+                    "regions": {"shell": region},
+                }
+
+                def measure(p):
+                    return request(
+                        "POST",
+                        "/api/jobs/" + job + "/inspect",
+                        {"X-Studio-Client": "1"},
+                        json.dumps({"profile": p}).encode(),
+                    )
+
+                self.assertEqual(measure(measured)[0], 200)
+                report = json.loads((output / "semantic-inspection.json").read_text())
+                self.assertEqual(report["sha256"], manifest["sha256"])
+                self.assertEqual(
+                    len(report["geometry"]["regions"]["shell"]["slices"]), 3
+                )
+                self.assertEqual(report["appearance"]["status"], "pending_review")
+                self.assertEqual(
+                    measure(
+                        {**measured, "regions": {str(i): region for i in range(7)}}
                     )[0],
                     400,
                 )
