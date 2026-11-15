@@ -39,6 +39,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 
 ## 任意のローカル形状エンジン
 
+TripoSG を使う場合の初回セットアップは `powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -TripoSG` です。セットアップ後は通常と同じコマンドで起動し、画像を1枚渡してください。
+
 写真に写った小物や家具を、被写体名や専用レシピの指定なしで TripoSG に渡す実験用の経路があります。初回にジョブ保存先ごとに設定すると、Web・CLI・MCP のどこから写真を送っても同じ方式を使います。CPUでの生成には長時間かかります。写真に写らない形・材質・模様は推定です。[動作条件・利用条件・設定方法](engine/TRIPOSG.md)
 
 ## 画像と費用

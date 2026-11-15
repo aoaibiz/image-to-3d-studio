@@ -1,4 +1,4 @@
-param([string]$CachedWeights = '')
+param([string]$CachedWeights = '', [switch]$TripoSG)
 $savedEnv = @{}
 foreach ($name in @('npm_config_cache', 'npm_config_userconfig', 'npm_config_globalconfig')) { $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 try {
@@ -30,6 +30,16 @@ if (!(Test-Path $zip) -or (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -
 }
 Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $PSScriptRoot '.runtime\validator') -Force
 if ((Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() -ne $exeHash) { throw 'Khronos validator executable hash mismatch' }
+if ($TripoSG) {
+  $shapeOptions = @{}
+  if ($env:STUDIO_TRIPOSG_RUNTIME) {
+    $shapeOptions.RuntimeDir = & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -c 'from engine.local_shape_job import runtime_path; print(runtime_path())'
+    if ($LASTEXITCODE) { throw 'Use an absolute STUDIO_TRIPOSG_RUNTIME path.' }
+  }
+  & (Join-Path $PSScriptRoot 'engine\setup-triposg.ps1') @shapeOptions
+  & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -m studio.configure --engine triposg
+  if ($LASTEXITCODE) { throw 'Could not select the TripoSG engine for this Studio checkout.' }
+}
 Write-Host 'Setup complete. Start: .\.runtime\venv\Scripts\python.exe -m studio.server'
 Write-Host 'Open http://127.0.0.1:47631'
 

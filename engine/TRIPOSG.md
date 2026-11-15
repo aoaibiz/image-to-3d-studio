@@ -6,7 +6,16 @@
 
 Windows x86-64、PowerShell、`uv`、モデルだけで約 7.95 GB のディスク容量が必要です。専用 Python 環境とダウンロードキャッシュの分も空けてください。CPU が BF16 をソフトウェアで処理する機種では、行列演算の検査に通っても推論に長時間かかる可能性があります。実行中の RAM の空きは生成側でも確認してください。上流の案内は CUDA GPU 向けで、ここでは本プロジェクトの CPU 実行経路を使います。[TripoSG モデルカード](https://huggingface.co/VAST-AI/TripoSG/blob/2c1c516d22d58db486a058d98d31bb6177344e06/README.md)
 
-## 導入
+## 写真を1枚入れて使う
+
+この方式を選ぶ場合は、リポジトリ直下で次の2行を実行します。最初のコマンドが前景分離・形状推定・着色・ビューアーを準備し、このインストールで使う方式を保存します。起動後は通常の画面に写真を貼り付けて生成してください。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -TripoSG
+.\.runtime\venv\Scripts\python.exe -m studio.server
+```
+
+## ランタイムを個別に準備する
 
 リポジトリ直下で実行します。
 
