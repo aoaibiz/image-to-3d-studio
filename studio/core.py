@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from .process_group import ProcessGroup
 from .configure import read_pipeline
-from engine.pipeline import GUIDED_PIPELINE, LEGACY_PIPELINE, PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
+from engine.pipeline import GUIDED_PIPELINES, HOST_PIPELINE, LEGACY_PIPELINE, PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
 import queue
 import re
 import sqlite3
@@ -29,6 +29,10 @@ class JobError(Exception):
 
 
 class PipelineConflict(JobError):
+    pass
+
+
+class AwaitingHostImage(Exception):
     pass
 
 
@@ -197,7 +201,7 @@ class JobCore:
                 "offline-preview.html",
                 "manifest.json",
             ]
-            if job["config"].get("pipeline") == GUIDED_PIPELINE:
+            if job["config"].get("pipeline") in GUIDED_PIPELINES:
                 names.extend(sorted(GUIDED_OUTPUTS))
             if job["config"].get("pipeline") in SHAPE_PIPELINES:
                 names.extend(["shape-master.glb", "appearance.json", "generation.json"])
@@ -478,7 +482,7 @@ class JobCore:
     def cancel(self, job_id):
         with self.lock:
             job = self.get(job_id)
-            if job["status"] in ("queued", "running"):
+            if job["status"] in ("queued", "running", "awaiting_host_image"):
                 self._update(
                     job_id,
                     "cancelled",
@@ -498,6 +502,49 @@ class JobCore:
                 raise JobError("中止処理が終わるまで待ってから再開してください。")
             self._update(job_id, "queued", "queued")
             return self.get(job_id)
+
+    def host_transfer(self, job_id, token, submission=None):
+        from engine import host_paint
+        with self.lock:
+            if not host_paint.authorize(self.directory, token):
+                raise PermissionError("ホストの送信設定を確認してください。")
+            job = self.get(job_id)
+            status = job["status"]
+            if self.pipeline != HOST_PIPELINE or job["config"].get("pipeline") != HOST_PIPELINE:
+                raise PipelineConflict("このジョブはホスト画像生成用に受付されていません。")
+            work = self.directory / job_id / "output/local-guided-work"
+            try:
+                if submission is None:
+                    if status != "awaiting_host_image":
+                        raise PipelineConflict("このジョブは画像を要求していません。")
+                    return host_paint.claim(work, job_id)
+                if status != "awaiting_host_image" and (
+                        status not in {"queued", "running", "needs_review", "failed", "interrupted"} or
+                        not (work / "host-result/receipt.json").is_file()):
+                    raise PipelineConflict("受付状態を確認してから同じジョブを続行してください。")
+                host_paint.submit(work, **submission, validate=self._validate_host_sheet)
+                if status == "awaiting_host_image":
+                    self._update(job_id, "queued", "queued")
+                return {"job": self.get(job_id)}
+            except (OSError, ValueError, RuntimeError, KeyError) as exc:
+                raise JobError("ホストの受付、PNG、生成IDとハッシュを確認してください。") from exc
+
+    def _validate_host_sheet(self, data):
+        # The server itself can run on a stdlib-only Python.
+        try:
+            from engine.guided_provider import _sheet
+        except ModuleNotFoundError as exc:
+            if exc.name != "PIL":
+                raise
+            check = subprocess.run(
+                [str(self.root / ".runtime/venv/Scripts/python.exe"), "-c",
+                 "import sys; from engine.guided_provider import _sheet; _sheet(sys.stdin.buffer.read())"],
+                cwd=self.root, input=data, capture_output=True, timeout=30,
+            )
+            if check.returncode:
+                raise ValueError("ホスト画像のPNGを検証できません。")
+        else:
+            _sheet(data)
 
     def events(self, job_id, after):
         self.get(job_id)
@@ -529,6 +576,10 @@ class JobCore:
                 with self.lock:
                     if self.get(job_id)["status"] == "running":
                         self._update(job_id, "needs_review", "needs_review")
+            except AwaitingHostImage:
+                with self.lock:
+                    if self.get(job_id)["status"] == "running":
+                        self._update(job_id, "awaiting_host_image", "awaiting_host_image")
             except Exception as exc:
                 with self.lock:
                     if self.get(job_id)["status"] == "running":
@@ -630,6 +681,8 @@ class JobCore:
             if self.get(job_id)["status"] != "running":
                 raise JobError("cancelled")
         if code:
+            if code == 72 and stage == "starting" and self.get(job_id)["config"].get("pipeline") == HOST_PIPELINE:
+                raise AwaitingHostImage()
             if failure:
                 raise JobError(failure)
             raise RuntimeError("command failed")
@@ -646,7 +699,7 @@ class JobCore:
             "texture.png",
         }
         shape = settings.get("pipeline") in SHAPE_PIPELINES
-        guided = settings.get("pipeline") == GUIDED_PIPELINE
+        guided = settings.get("pipeline") in GUIDED_PIPELINES
         extra = SHAPE_OUTPUTS | GUIDED_OUTPUTS if guided else SHAPE_OUTPUTS
         if guided:
             required.update(GUIDED_OUTPUTS)
@@ -701,7 +754,7 @@ class JobCore:
         settings_path = out / "settings.json"
         config = self.get(job_id)["config"]
         shape = config.get("pipeline") in SHAPE_PIPELINES
-        guided = config.get("pipeline") == GUIDED_PIPELINE
+        guided = config.get("pipeline") in GUIDED_PIPELINES
         if (
             hashlib.sha256((folder / "input.image").read_bytes()).hexdigest()
             != self.get(job_id)["input_sha256"]
@@ -766,6 +819,8 @@ class JobCore:
                         p.unlink()
             if guided:
                 command = [py, "-u", "-m", "engine.guided_shape_job", "--setup", str(self.directory / "engine.json")]
+                if config.get("pipeline") == HOST_PIPELINE:
+                    command.extend(["--pipeline", HOST_PIPELINE])
             elif shape:
                 command = [py, "-u", "-m", "engine.local_shape_job"]
             else:

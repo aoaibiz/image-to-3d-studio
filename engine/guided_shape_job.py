@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from engine import local_shape_job, triposg_cpu as sg
-from engine.pipeline import GUIDED_PIPELINE, SHAPE_PIPELINE
+from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, SHAPE_PIPELINE
 
 EDITABLE = {
     "model.glb",
@@ -34,13 +34,13 @@ GUIDED_FILES = BASE_FILES | {
 StageError = local_shape_job.StageError
 
 
-def _consent(setup):
-    from engine.guided_provider import AGREEMENT
+def _consent(setup, pipeline=GUIDED_PIPELINE):
+    from studio.configure import agreement
 
     try:
         if setup.stat().st_size > 32768:
             raise ValueError("設定が無効です。")
-        expected = {"pipeline": GUIDED_PIPELINE, "agreement": AGREEMENT}
+        expected = {"pipeline": pipeline, "agreement": agreement(pipeline)}
         valid = json.dumps(sg.read_json(setup), sort_keys=True) == json.dumps(
             expected, sort_keys=True
         )
@@ -59,7 +59,7 @@ def _validate(directory, pipeline, job_key):
         return None
     settings = sg.read_json(marker)
     files = settings["artifact_sha256"]
-    required = GUIDED_FILES if pipeline == GUIDED_PIPELINE else BASE_FILES
+    required = GUIDED_FILES if pipeline in GUIDED_PIPELINES else BASE_FILES
     if not (
         settings["pipeline"] == pipeline
         and settings["auto_finish_complete"] is True
@@ -182,6 +182,8 @@ def _project(base, guides, sheet, receipt, stage):
             "original_photograph_count",
             "guide_count",
             "elapsed_seconds",
+            "host_tool_call_id",
+            "delivery_mode",
         )
         if k in receipt
     }
@@ -216,7 +218,7 @@ def _project(base, guides, sheet, receipt, stage):
         shutil.copyfile(src, stage / dst)
 
 
-def run(source, out, resolution=256, texture_size=1024, *, setup):
+def run(source, out, resolution=256, texture_size=1024, *, setup, pipeline=GUIDED_PIPELINE):
     from engine.guided_provider import generate_guided_paint
 
     if resolution not in (128, 256) or texture_size not in (256, 512, 1024):
@@ -226,7 +228,7 @@ def run(source, out, resolution=256, texture_size=1024, *, setup):
         )
     source, out, setup = (Path(p).resolve() for p in (source, out, setup))
     key = {
-        "pipeline": GUIDED_PIPELINE,
+        "pipeline": pipeline,
         "input_sha256": sg.digest(source),
         "resolution": resolution,
         "texture_size": texture_size,
@@ -257,12 +259,12 @@ def run(source, out, resolution=256, texture_size=1024, *, setup):
             if identity.exists() and sg.read_json(identity) != key:
                 raise ValueError("保存したジョブの入力または設定が一致しません。")
             sg.atomic_json(identity, key)
-            final = _validate(out, GUIDED_PIPELINE, key)
+            final = _validate(out, pipeline, key)
             if final is not None:
                 record("guided_export", "completed")
                 return final
             stage = "guided_consent"
-            _consent(setup)
+            _consent(setup, pipeline)
             stage = "guided_checkpoint"
             record(stage)
             original = _validate(base, SHAPE_PIPELINE, key)
@@ -278,14 +280,17 @@ def run(source, out, resolution=256, texture_size=1024, *, setup):
             stage = "guided_provider"
             print("requesting inferred paint", flush=True)
             record(stage)
-            _consent(setup)
-            result = generate_guided_paint(
-                source,
-                guides / "guides.png",
-                guides / "request-guide.json",
-                work,
-                setup=setup,
-            )
+            _consent(setup, pipeline)
+            if pipeline == HOST_PIPELINE:
+                from engine import host_paint
+                request = host_paint.prepare(work, source, guides / "guides.png", layout)
+                result = host_paint.result(work, request)
+                if result is None:
+                    raise StageError("awaiting_host_image", "Codex の画像生成結果を待っています。")
+            else:
+                result = generate_guided_paint(
+                    source, guides / "guides.png", guides / "request-guide.json", work, setup=setup,
+                )
             sheet = Path(result["sheet"])
             receipt = result["provenance"]
             if not (
@@ -294,7 +299,7 @@ def run(source, out, resolution=256, texture_size=1024, *, setup):
                 and receipt.get("geometry_sha256") == layout["model_sha"]
                 and receipt.get("guide_sha256") == layout["guide_sha"]
                 and sg.digest(sheet) == receipt.get("sheet_sha256")
-                and receipt.get("thread_id")
+                and (receipt.get("host_tool_call_id") if pipeline == HOST_PIPELINE else receipt.get("thread_id"))
             ):
                 raise ValueError(
                     "外部生成の写真・形状・結果の記録を確認できませんでした。"
@@ -311,7 +316,7 @@ def run(source, out, resolution=256, texture_size=1024, *, setup):
                 hashes = {name: sg.digest(stage_dir / name) for name in GUIDED_FILES}
                 settings = {
                     **original,
-                    "pipeline": GUIDED_PIPELINE,
+                    "pipeline": pipeline,
                     "artifact_sha256": hashes,
                     "glb_sha256": hashes["model.glb"],
                     "local_base_sha256": original["glb_sha256"],
@@ -324,7 +329,7 @@ def run(source, out, resolution=256, texture_size=1024, *, setup):
             record(stage, "completed")
             return settings
         except StageError as exc:
-            record(exc.code, "failed", reason=str(exc))
+            record(exc.code, "waiting" if exc.code == "awaiting_host_image" else "failed", reason=str(exc))
             raise
         except (
             ValueError,
@@ -347,6 +352,7 @@ def main():
         "--texture-size", type=int, choices=(256, 512, 1024), default=1024
     )
     parser.add_argument("--setup", type=Path, required=True)
+    parser.add_argument("--pipeline", choices=GUIDED_PIPELINES, default=GUIDED_PIPELINE)
     args = parser.parse_args()
     try:
         run(
@@ -355,10 +361,11 @@ def main():
             args.resolution,
             args.texture_size,
             setup=args.setup,
+            pipeline=args.pipeline,
         )
     except StageError as exc:
         sg.emit("studio_error", code=exc.code, detail=str(exc))
-        raise SystemExit(1)
+        raise SystemExit(72 if exc.code == "awaiting_host_image" else 1)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { json, submit, watch, jobPath, artifactChunk } from "./service.mjs";
+import { json, submit, watch, jobPath, artifactChunk, claimPaint, submitPaint } from "./service.mjs";
 const server = new McpServer({ name: "image-to-3d-studio", version: "1.0.0" });
 const id = z.string().uuid();
 const result = (value) => ({
@@ -46,6 +46,16 @@ register(
 register("status", "Read job status.", { jobId: id }, ({ jobId }) =>
   json(jobPath(jobId)),
 );
+register("claim_paint", "Claim the fixed image instruction and two local paths for an explicitly configured host job. Only generate when generate_once is true.", { jobId: id }, ({ jobId }) => claimPaint(jobId));
+register("submit_paint", "Return the original PNG from the authorized native ImageGen tool. Repeating the same result is idempotent.", {
+  jobId: id, claimId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  requestSha256: z.string().regex(/^[0-9a-f]{64}$/), toolCallId: z.string().regex(/^[A-Za-z0-9_-]{1,160}$/),
+  pngBase64: z.string().min(4).max(Math.ceil(20971520 / 3) * 4),
+}, ({jobId, claimId, requestSha256, toolCallId, pngBase64}) => {
+  const bytes = Buffer.from(pngBase64, "base64");
+  if (bytes.toString("base64") !== pngBase64) throw Error("PNGのBase64形式を確認してください。");
+  return submitPaint(jobId, claimId, requestSha256, toolCallId, bytes);
+});
 register(
   "wait",
   "Wait for job completion through the event stream.",

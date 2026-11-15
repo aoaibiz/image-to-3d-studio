@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { extname } from "node:path";
 import {
   BASE,
+  claimPaint, submitPaint,
   json,
   submit,
   watch,
@@ -34,6 +35,15 @@ try {
     case "status":
       output(await json(jobPath(args[0])));
       break;
+    case "claim-paint":
+      output(await claimPaint(args[0]));
+      break;
+    case "submit-paint": {
+      const [id, claim, sha, call, file] = args;
+      if (!file || (await stat(file)).size > 20971520) throw Error("20MB以下の画像生成PNGを指定してください。");
+      output(await submitPaint(id, claim, sha, call, await readFile(file)));
+      break;
+    }
     case "watch":
       output(await watch(args[0], (event) => output(event)));
       break;
@@ -76,7 +86,7 @@ try {
     }
     default:
       throw Error(
-        "Commands: diagnose, generate <image> <stable-request-key>, status, watch, cancel, resume, show, export, inspect",
+        "Commands: diagnose, generate <image> <stable-request-key>, status, watch, cancel, resume, show, export, inspect, claim-paint <id>, submit-paint <id> <claim> <request-sha> <tool-call-id> <png>",
       );
   }
 } catch (error) {

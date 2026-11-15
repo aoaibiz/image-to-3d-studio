@@ -1,6 +1,8 @@
 import { createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 
 const port = process.env.STUDIO_PORT ?? "47631";
 if (!/^[0-9]{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535)
@@ -31,6 +33,28 @@ export async function request(path, options = {}) {
 export async function json(path, options) {
   return (await request(path, options)).json();
 }
+async function hostHeaders() {
+  const file = process.env.STUDIO_HOST_TOKEN_FILE || new URL("../jobs/studio/host-access.token", import.meta.url);
+  let token;
+  try { token = (await readFile(file, "utf8")).trim(); } catch {
+    throw Error("ホスト生成の初回設定と STUDIO_HOST_TOKEN_FILE を確認してください。");
+  }
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw Error("ホストの設定が無効です。");
+  return { "X-Studio-Host-Token": token };
+}
+export async function claimPaint(id) {
+  return json(jobPath(id) + "/host/claim", { method: "POST", headers: await hostHeaders() });
+}
+export async function submitPaint(id, claim, requestSha, toolCall, png) {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(claim) || !/^[0-9a-f]{64}$/.test(requestSha)
+      || !/^[A-Za-z0-9_-]{1,160}$/.test(toolCall) || !png.length || png.length > 20971520)
+    throw Error("受付番号、要求ハッシュ、画像生成ID、PNGサイズを確認してください。");
+  return json(jobPath(id) + "/host/submit", { method: "POST", headers: {
+    ...await hostHeaders(), "Content-Type": "image/png", "X-Studio-Claim": claim,
+    "X-Studio-Request-Sha256": requestSha, "X-Studio-Tool-Call": toolCall,
+    "X-Studio-Paint-Sha256": createHash("sha256").update(png).digest("hex"),
+  }, body: png });
+}
 export function submit(bytes, mime, key) {
   if (!["image/png", "image/jpeg", "image/webp"].includes(mime))
     throw Error("Image must be PNG, JPEG, or WebP");
@@ -46,7 +70,7 @@ export function submit(bytes, mime, key) {
 }
 export async function watch(id, onEvent = () => {}, signal) {
   const res = await request(jobPath(id) + "/events", {
-    headers: { Accept: "text/event-stream" },
+    headers: { Accept: "text/event-stream", "X-Studio-Yield-Host": "1" },
     signal,
   });
   const reader = res.body.getReader();
@@ -72,7 +96,7 @@ export async function watch(id, onEvent = () => {}, signal) {
       if (done) {
         const current = await json(jobPath(id));
         if (
-          ["needs_review", "failed", "cancelled", "interrupted"].includes(
+          ["needs_review", "failed", "cancelled", "interrupted", "awaiting_host_image"].includes(
             current.job?.status,
           )
         )

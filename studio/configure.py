@@ -6,10 +6,19 @@ import os
 import tempfile
 from pathlib import Path
 
-from engine.pipeline import GUIDED_PIPELINE, PIPELINE, SHAPE_PIPELINE
+from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, PIPELINE, SHAPE_PIPELINE
 
 ROOT = Path(__file__).resolve().parents[1]
-ENGINES = {"triposr": PIPELINE, "triposg": SHAPE_PIPELINE, "triposg-guided": GUIDED_PIPELINE}
+ENGINES = {"triposr": PIPELINE, "triposg": SHAPE_PIPELINE, "triposg-guided": GUIDED_PIPELINE,
+           "triposg-guided-host": HOST_PIPELINE}
+
+
+def agreement(pipeline):
+    if pipeline == HOST_PIPELINE:
+        from engine.host_paint import AGREEMENT
+    else:
+        from engine.guided_provider import AGREEMENT
+    return AGREEMENT
 
 
 def read_pipeline(directory):
@@ -21,9 +30,8 @@ def read_pipeline(directory):
         raise ValueError(
             "生成設定が無効です。studio.configure でローカルエンジンを設定し直してください。"
         )
-    if doc["pipeline"] == GUIDED_PIPELINE:
-        from engine.guided_provider import AGREEMENT
-        if doc.get("agreement") != AGREEMENT:
+    if doc["pipeline"] in GUIDED_PIPELINES:
+        if doc.get("agreement") != agreement(doc["pipeline"]):
             raise ValueError("背面の推定には、元写真と立体の確認画像をOpenAIへ送信する初回設定が必要です。")
     return doc["pipeline"]
 
@@ -33,11 +41,13 @@ def configure(directory, engine, *, allow_send_to_openai=False):
     directory.mkdir(parents=True, exist_ok=True)
     pipeline = ENGINES[engine]
     config = {"pipeline": pipeline}
-    if pipeline == GUIDED_PIPELINE:
+    if pipeline in GUIDED_PIPELINES:
         if not allow_send_to_openai:
             raise ValueError("OpenAIへの元写真・確認画像の送信を許可するには --allow-send-to-openai を指定してください。")
-        from engine.guided_provider import AGREEMENT
-        config["agreement"] = AGREEMENT
+        config["agreement"] = agreement(pipeline)
+        if pipeline == HOST_PIPELINE:
+            from engine.host_paint import setup_token
+            setup_token(directory)
     with tempfile.NamedTemporaryFile(
         mode="w", encoding="utf8", dir=directory, delete=False
     ) as f:

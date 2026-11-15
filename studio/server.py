@@ -12,7 +12,7 @@ import subprocess
 import sys
 from urllib.parse import urlsplit, parse_qs
 from .core import JobCore, JobError, PipelineConflict, MAX_INPUT, ROOT, TERMINAL
-from engine.pipeline import GUIDED_PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
+from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
 
 STATIC = {
     "/": "viewer/index.html",
@@ -167,12 +167,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/engine":
             pipeline = self.server.core.pipeline
-            self.send_json(200, {"pipeline": pipeline, "local": pipeline != GUIDED_PIPELINE,
-                                 **({"recipient": "OpenAI ChatGPT"} if pipeline == GUIDED_PIPELINE else {})})
+            self.send_json(200, {"pipeline": pipeline, "local": pipeline not in GUIDED_PIPELINES,
+                                 **({"recipient": "OpenAI ChatGPT"} if pipeline in GUIDED_PIPELINES else {})})
             return
         if path == "/api/doctor":
             if self.server.core.pipeline in SHAPE_PIPELINES:
                 result = shape_doctor(self.server.core)
+                if self.server.core.pipeline == HOST_PIPELINE:
+                    result.update(pipeline=HOST_PIPELINE, local=False, recipient="OpenAI ChatGPT")
+                    result["diagnostics"]["guided_paint"] = {"provider": "Codex host / OpenAI ImageGen",
+                                                             "host_image_tool": "checked by the connected host"}
                 if self.server.core.pipeline == GUIDED_PIPELINE:
                     from engine.guided_provider import preflight
                     provider = preflight()
@@ -319,7 +323,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not value.isdigit():
                     self.send_json(400, {"error": "イベント位置を確認してください。"})
                     return
-                self.sse(job_id, int(value))
+                self.sse(job_id, int(value), stop_for_host=self.headers.get("X-Studio-Yield-Host") == "1")
                 return
             if filename:
                 if filename not in job["artifacts"]:
@@ -336,7 +340,8 @@ class Handler(BaseHTTPRequestHandler):
         except KeyError:
             self.send_json(404, {"error": "ジョブがありません。"})
 
-    def sse(self, job_id, cursor):
+    def sse(self, job_id, cursor, *, stop_for_host=False):
+        stop = TERMINAL | ({"awaiting_host_image"} if stop_for_host else set())
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -348,7 +353,7 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.core.changed:
                     events = self.server.core.events(job_id, cursor)
                     status = self.server.core.get(job_id)["status"]
-                    if not events and status not in TERMINAL:
+                    if not events and status not in stop:
                         self.server.core.changed.wait(timeout=15)
                         events = self.server.core.events(job_id, cursor)
                         status = self.server.core.get(job_id)["status"]
@@ -366,7 +371,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not events:
                     self.wfile.write(b": keepalive\n\n")
                 self.wfile.flush()
-                if status in TERMINAL:
+                if status in stop:
                     return
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
@@ -375,17 +380,38 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized(write=True):
             return
         path = urlsplit(self.path).path
+        host_action = re.fullmatch(r"/api/jobs/([0-9a-f-]{36})/host/(claim|submit)", path)
+        host_token = self.headers.get("X-Studio-Host-Token")
+        if host_action:
+            from engine.host_paint import authorize
+            if not authorize(self.server.core.directory, host_token):
+                self.close_connection = True
+                self.send_json(403, {"error": "この端末のホスト送信設定を確認してください。"})
+                return
         length = self.headers.get("Content-Length", "")
         if not length.isdigit() or int(length) > MAX_INPUT:
             self.close_connection = True
             self.send_json(413, {"error": "画像は20MB以下で選び直してください。"})
             return
-        if path != "/api/jobs" and int(length) > 65536:
+        if path != "/api/jobs" and not (host_action and host_action[2] == "submit") and int(length) > 65536:
             self.close_connection = True
             self.send_json(413, {"error": "入力は64KB以下にしてください。"})
             return
         data = self.rfile.read(int(length))
         try:
+            if host_action:
+                submission = None
+                if host_action[2] == "submit":
+                    if self.headers.get("Content-Type") != "image/png":
+                        raise JobError("画像生成ツールのPNGを指定してください。")
+                    submission = dict(claim_id=self.headers.get("X-Studio-Claim"),
+                                      request_sha=self.headers.get("X-Studio-Request-Sha256"),
+                                      sheet_sha=self.headers.get("X-Studio-Paint-Sha256"),
+                                      tool_call=self.headers.get("X-Studio-Tool-Call"), png=data)
+                elif data:
+                    raise JobError("受付に追加の入力は必要ありません。")
+                self.send_json(200, self.server.core.host_transfer(host_action[1], host_token, submission))
+                return
             if path == "/api/jobs":
                 job, created = self.server.core.create(
                     data, self.headers.get("Idempotency-Key"), self.headers.get("X-Studio-Pipeline")
@@ -412,6 +438,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "ジョブがありません。"})
         except PipelineConflict as exc:
             self.send_json(409, {"error": str(exc)})
+        except PermissionError as exc:
+            self.send_json(403, {"error": str(exc)})
         except JobError as exc:
             self.send_json(400, {"error": str(exc)})
 

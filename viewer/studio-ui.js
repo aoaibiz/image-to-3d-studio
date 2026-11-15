@@ -61,11 +61,12 @@ async function readEngine() {
   try {
     const engine = await api('/api/engine', { cache: 'no-store' });
     const local = engine.local === true && [tripoSR, tripoSG].includes(engine.pipeline);
-    const guided = engine.pipeline === guidedSG && engine.local === false && engine.recipient === 'OpenAI ChatGPT';
+    const guided = [guidedSG, 'triposg-host-guided-v1'].includes(engine.pipeline) && engine.local === false && engine.recipient === 'OpenAI ChatGPT';
     if (!local && !guided) throw Error('生成方式と送信先を確認できません。');
     pipeline = engine.pipeline;
     if (guided) {
       info.textContent = '形状はこの端末で生成します。背面の塗装を推定するため、元写真と立体の確認画像をOpenAIに送信し、本人のChatGPT利用枠を使用します。';
+      if (pipeline === 'triposg-host-guided-v1') info.textContent += '画像生成に対応するCodexに、このジョブを引き継いでください。';
     } else info.textContent = pipeline === tripoSG
       ? 'TripoSG は画像の切り抜き・形状の生成・着色をすべてこの端末で処理します。CPU では数時間かかる場合があります。'
       : 'TripoSR がこの端末で形状を生成し、画像に合わせて仕上げます。';
@@ -76,7 +77,7 @@ async function readEngine() {
   updateGenerate();
 }
 function showControls(job) {
-  const active = job.status === 'running' || job.status === 'queued';
+  const active = ['running', 'queued', 'awaiting_host_image'].includes(job.status);
   jobActive = active;
   cancel.hidden = !active; resume.hidden = !['failed', 'cancelled', 'interrupted'].includes(job.status);
   updateGenerate();
@@ -160,6 +161,7 @@ async function refresh(id) {
   const savedStep = job.status === 'running' && /^shape step (\d+)\/(\d+)$/.exec(job.stage);
   const memoryWait = /^waiting for memory (\d+\.\d{2})\/(\d+\.\d{2})$/.exec(job.stage);
   let label = savedStep ? stages['generating shape'] : stages[job.stage] || job.stage || job.status;
+  if (job.status === 'awaiting_host_image') label = '画像生成に対応するCodexで、このジョブの推定塗装を続けてください';
   if (memoryWait) label = `空きメモリを待っています（待機開始時 ${memoryWait[1]} GiB、再開の目安 ${memoryWait[2]} GiB）`;
   const progress = savedStep ? {step: Number(savedStep[1]), total: Number(savedStep[2])} : job.progress;
   const steps = job.status === 'running' && Number.isSafeInteger(progress?.step) && Number.isSafeInteger(progress?.total)
