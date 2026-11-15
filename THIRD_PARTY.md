@@ -1,5 +1,7 @@
 # Third-party components and model provenance
 
+The optional Pixal3D adapter sends a published CC0 photograph to a community-operated inference service. TencentARC publishes Pixal3D under MIT and documents separate third-party components. Studio distributes its client code. Operators of a self-hosted installation must also check the terms for its weights and components. [Upstream source and license](https://github.com/TencentARC/Pixal3D) · [Upstream notices](https://github.com/TencentARC/Pixal3D/blob/master/NOTICE) · [Space operator and transfer details](engine/PIXAL3D.md)
+
 任意の CPU 形状エンジン TripoSG のコード、重み、同梱モジュールの個別条件、取得元・固定リビジョンは [TripoSG の第三者条件](engine/TRIPOSG.md#第三者の利用条件) に記載しています。これらの資材は各利用者の専用環境に取得します。
 
 Inventory checked 2026-11-15 against the repository's setup and dependency declarations and the upstream sources linked below. This is an inventory, not a complete bill of materials or a replacement for the license texts required when distributing binaries. Dependencies and downloaded weights are runtime artifacts, not original project assets.
