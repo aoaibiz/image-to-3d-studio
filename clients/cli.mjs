@@ -1,0 +1,85 @@
+#!/usr/bin/env node
+import { readFile } from "node:fs/promises";
+import { extname } from "node:path";
+import {
+  BASE,
+  json,
+  submit,
+  watch,
+  jobPath,
+  artifactPath,
+  exportFile,
+  sendJson,
+} from "./service.mjs";
+import { profileSchema, reviewSchema } from "./schemas.mjs";
+const [command, ...args] = process.argv.slice(2);
+const output = (x) => console.log(JSON.stringify(x, null, 2));
+try {
+  switch (command) {
+    case "diagnose":
+      output(await json("/api/doctor"));
+      break;
+    case "generate": {
+      const [file, key] = args;
+      if (!file || !key) throw Error("generate <image> <stable-request-key>");
+      const mime = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+      }[extname(file).toLowerCase()];
+      output(await submit(await readFile(file), mime, key));
+      break;
+    }
+    case "status":
+      output(await json(jobPath(args[0])));
+      break;
+    case "watch":
+      output(await watch(args[0], (event) => output(event)));
+      break;
+    case "cancel":
+    case "resume":
+      output(await json(jobPath(args[0]) + "/" + command, { method: "POST" }));
+      break;
+    case "show":
+      console.log(BASE + artifactPath(args[0], "offline-preview.html"));
+      break;
+    case "inspect":
+      output(
+        args[1]
+          ? await sendJson(jobPath(args[0]) + "/inspect", {
+              profile: profileSchema.parse(
+                JSON.parse(await readFile(args[1], "utf8")),
+              ),
+            })
+          : await json(artifactPath(args[0], "inspection.json")),
+      );
+      break;
+    case "review":
+      if (!args[1]) throw Error("review <job-id> <review-json>");
+      output(
+        await sendJson(
+          jobPath(args[0]) + "/review",
+          reviewSchema.parse(JSON.parse(await readFile(args[1], "utf8"))),
+        ),
+      );
+      break;
+    case "export": {
+      const [id, name, destination, option] = args;
+      if (!destination || (option && option !== "--overwrite"))
+        throw Error(
+          "export <job-id> <artifact-filename> <destination> [--overwrite]",
+        );
+      await exportFile(id, name, destination, option === "--overwrite");
+      console.log(destination);
+      break;
+    }
+    default:
+      throw Error(
+        "Commands: diagnose, generate <image> <stable-request-key>, status, watch, cancel, resume, show, export, inspect",
+      );
+  }
+} catch (error) {
+  console.error(error.message);
+  process.exitCode = 1;
+}

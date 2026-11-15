@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "image-to-3d-studio": {
+      "command": "node",
+      "args": ["launcher.mjs"],
+      "cwd": "${PLUGIN_ROOT}"
+    }
+  }
+}

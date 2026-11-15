@@ -1,0 +1,17 @@
+{
+  "name": "clients",
+  "version": "1.0.0",
+  "description": "Local CLI and MCP clients for Image to 3D Studio",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 *.test.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "zod": "4.6.7"
+  },
+  "private": "true"
+}

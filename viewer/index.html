@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>GLB 検証ビューアー</title>
+  <style>
+    body { margin: 0; font: 15px system-ui; background: #eceeea; color: #17221d; }
+    header, section { padding: 12px 18px; }
+    header { background: #152a21; color: white; }
+    h1 { font-size: 18px; margin: 0; }
+    section { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: white; }
+    button, input, select { font: inherit; }
+    button, a { padding: 7px 10px; }
+    button { cursor: pointer; }
+    #viewport { height: 65vh; min-height: 320px; touch-action: none; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #status { padding: 8px 18px; overflow-wrap: anywhere; }
+    small { color: #54645a; }
+  </style>
+</head>
+<body>
+  <header><h1>GLB 検証ビューアー</h1></header>
+  <section>
+    <label>GLB を開く <input id="file" type="file" accept=".glb,model/gltf-binary"></label>
+    <a id="download" hidden>元の GLB を保存</a><span id="hash"></span>
+  </section>
+  <section aria-label="視点">
+    <b>視点</b>
+    <button data-view="front">正面 +Z</button><button data-view="back">背面 −Z</button>
+    <button data-view="left">左 −X</button><button data-view="right">右 +X</button>
+    <button data-view="top">上 +Y</button><button data-view="bottom">下 −Y</button>
+    <button data-view="front-right">右斜め前</button><button data-view="front-left">左斜め前</button>
+    <button data-view="back-right">右斜め後</button><button data-view="back-left">左斜め後</button>
+  </section>
+  <section aria-label="照明">
+    <b>照明</b><button data-light="studio">標準</button><button data-light="soft">柔らかい</button>
+    <button data-light="side">側面</button><button id="reset">視点をリセット</button>
+  </section>
+  <section aria-label="表示">
+    <b>表示</b><button data-mode="material">材質</button><button data-mode="clay">白クレイ</button>
+    <button data-mode="wire">ワイヤー</button><button id="capture">現在の画像を保存</button>
+    <small>ドラッグで回転、ホイールで拡大縮小。正面は GLB の +Z 軸です。</small>
+  </section>
+  <div id="viewport"></div>
+  <div id="status" role="status">GLB を選択してください。ファイルはこの端末内で処理します。</div>
+  <script type="importmap">
+    {"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}
+  </script>
+  <script type="module" src="/viewer.js"></script>
+</body>
+</html>

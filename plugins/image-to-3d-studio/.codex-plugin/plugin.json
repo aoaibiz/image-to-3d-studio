@@ -1,0 +1,16 @@
+{
+  "name": "image-to-3d-studio",
+  "version": "0.1.0",
+  "description": "Generate and inspect 3D models with a local studio service.",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "onboardingSkill": "./skills/setup/SKILL.md",
+  "interface": {
+    "displayName": "Image to 3D Studio",
+    "shortDescription": "Local image to 3D",
+    "longDescription": "Submit images to a local service and inspect generated 3D assets.",
+    "developerName": "Image to 3D Studio",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"]
+  }
+}

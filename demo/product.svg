@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs>
+ <linearGradient id="body" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#56d5bd"/><stop offset="1" stop-color="#087d79"/></linearGradient>
+ <linearGradient id="top" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#a1f1d6"/><stop offset="1" stop-color="#25b7a6"/></linearGradient>
+ <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#bedee0"/><stop offset="1" stop-color="#416d78"/></linearGradient>
+</defs>
+<rect width="1024" height="1024" fill="#fff"/>
+<ellipse cx="512" cy="742" rx="371" ry="66" fill="#d9e6e3" opacity=".65"/>
+<!-- rolling chassis: rear left, nose right -->
+<path d="M145 601 L184 480 Q195 445 241 431 L558 339 Q593 330 629 344 L825 424 Q862 440 879 480 L900 560 L879 631 L687 700 L208 680 L151 653 Z" fill="#176b68" stroke="#173e40" stroke-width="10" stroke-linejoin="round"/>
+<!-- far side visible top -->
+<path d="M184 480 L238 432 L553 339 Q590 328 630 344 L825 424 L761 467 L456 554 Z" fill="url(#top)" stroke="#173e40" stroke-width="10" stroke-linejoin="round"/>
+<!-- main visible side -->
+<path d="M145 601 L184 480 L456 554 L761 467 L775 600 L682 651 L631 658 Q621 604 572 606 Q525 610 510 666 L309 663 Q301 609 255 605 Q208 607 195 657 L151 644 Z" fill="url(#body)" stroke="#173e40" stroke-width="10" stroke-linejoin="round"/>
+<!-- nose -->
+<path d="M761 467 L825 424 Q860 440 879 480 L900 560 L879 631 L775 665 L682 651 L775 600 Z" fill="#15988e" stroke="#173e40" stroke-width="10" stroke-linejoin="round"/>
+<!-- cockpit -->
+<path d="M321 447 L384 351 Q397 332 424 326 L558 293 Q580 288 603 302 L684 371 L633 432 L452 483 Z" fill="#f4c653" stroke="#173e40" stroke-width="10" stroke-linejoin="round"/>
+<path d="M339 440 L397 358 Q407 347 425 343 L481 331 L490 439 L451 461 Z" fill="url(#glass)" stroke="#173e40" stroke-width="8" stroke-linejoin="round"/>
+<path d="M503 327 L557 313 Q575 310 589 319 L658 374 L616 419 L510 450 Z" fill="url(#glass)" stroke="#173e40" stroke-width="8" stroke-linejoin="round"/>
+<path d="M511 337 L525 426 M411 367 L392 411" fill="none" stroke="#e7f7ef" stroke-width="8" stroke-linecap="round" opacity=".75"/>
+<!-- bonnet stripe and detail -->
+<path d="M671 434 L754 410 L812 434 L731 460 Z" fill="#f6d05e" stroke="#173e40" stroke-width="7" stroke-linejoin="round"/>
+<path d="M333 510 L452 544 L665 483" fill="none" stroke="#9aebd4" stroke-width="7" opacity=".7"/>
+<path d="M428 515 L425 644 M435 538 L467 546" fill="none" stroke="#126d68" stroke-width="7" stroke-linecap="round"/>
+<!-- wheels -->
+<g stroke="#173e40" stroke-width="10"><ellipse cx="253" cy="663" rx="53" ry="69" fill="#263b3d"/><ellipse cx="253" cy="663" rx="29" ry="39" fill="#e9c354"/><ellipse cx="253" cy="663" rx="10" ry="13" fill="#294b4a"/><ellipse cx="569" cy="665" rx="53" ry="69" fill="#263b3d"/><ellipse cx="569" cy="665" rx="29" ry="39" fill="#e9c354"/><ellipse cx="569" cy="665" rx="10" ry="13" fill="#294b4a"/></g>
+<!-- front lights bumper grille -->
+<path d="M790 498 L827 485 L833 512 L794 527 Z M852 477 L871 486 L877 512 L856 517 Z" fill="#fff3c3" stroke="#173e40" stroke-width="7" stroke-linejoin="round"/>
+<path d="M811 551 L874 530 L875 565 L815 585 Z" fill="#315b58" stroke="#173e40" stroke-width="7" stroke-linejoin="round"/>
+<path d="M821 556 L821 575 M835 551 L835 570 M849 546 L849 565 M863 541 L863 560" stroke="#9fc9b3" stroke-width="5"/>
+<path d="M778 622 L881 589" fill="none" stroke="#f0c454" stroke-width="13" stroke-linecap="round"/>
+<path d="M160 554 L181 560 L177 584 L155 580 Z" fill="#f6b354" stroke="#173e40" stroke-width="6"/>
+</svg>

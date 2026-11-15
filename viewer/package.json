@@ -1,0 +1,18 @@
+{
+  "name": "viewer",
+  "version": "1.0.0",
+  "description": "Local GLB inspection and offline preview",
+  "scripts": {
+    "start": "node server.cjs",
+    "proof": "node proof.cjs",
+    "preview": "node make-preview.cjs"
+  },
+  "dependencies": {
+    "three": "0.180.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "esbuild": "0.25.12"
+  },
+  "private": true
+}

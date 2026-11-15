@@ -1,0 +1,35 @@
+:root { color-scheme: light; }
+body.studio { background: #f3f4f0; color: #1b2924; }
+.studio header { background: #173c31; padding: 18px 26px; }
+.studio header h1 { font-size: 20px; }
+.studio #studio-app { max-width: 1080px; margin: 24px auto; padding: 0 20px; }
+.studio .workbench { background: #fff; border: 1px solid #d8dfd8; border-radius: 12px; padding: 24px; }
+.studio .eyebrow { color: #416755; font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+.studio h2 { margin: 6px 0 8px; font-size: 23px; }
+.studio .intro { color: #52635a; margin: 0 0 18px; line-height: 1.6; }
+.studio .drop { border: 2px dashed #9caf9f; background: #f7faf7; border-radius: 9px; padding: 20px; text-align: center; }
+.studio .drop.dragging { border-color: #1d7652; background: #e8f4ec; }
+.studio .drop p { margin: 8px 0; }
+.studio .pick { display: inline-block; padding: 9px 14px; border: 1px solid #85a38f; border-radius: 6px; cursor: pointer; background: white; }
+.studio .pick:focus-within { outline: 3px solid #c1dbc9; }
+.studio #image-file { max-width: 100%; }
+.studio .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.studio button { border: 1px solid #a6b9ab; border-radius: 6px; background: white; color: #173c31; }
+.studio button:focus-visible, .studio input:focus-visible { outline: 3px solid #78ab88; outline-offset: 2px; }
+.studio button.primary { background: #1c6045; color: white; border-color: #1c6045; font-weight: 700; }
+.studio button:disabled { opacity: .45; cursor: default; }
+.studio #job-state { margin-top: 16px; line-height: 1.6; overflow-wrap: anywhere; }
+.studio #job-state p { margin: 5px 0; }
+.studio .inspection-title { max-width: 1080px; margin: 28px auto 10px; padding: 0 20px; }
+.studio > section { max-width: 1080px; margin: auto; box-sizing: border-box; gap: 8px; }
+.studio #viewport { max-width: 1080px; margin: auto; height: 52vh; min-height: 280px; }
+.studio #status { max-width: 1080px; margin: auto; padding: 12px 20px; }
+.studio #hash { font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .studio header { padding: 14px 16px; }
+  .studio #studio-app { margin: 16px auto; padding: 0 12px; }
+  .studio .workbench { padding: 16px; }
+  .studio section { padding: 10px 12px; }
+  .studio #viewport { height: 42vh; }
+  .studio .inspection-title { padding: 0 12px; }
+}

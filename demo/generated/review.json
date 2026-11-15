@@ -1,0 +1,20 @@
+{
+  "id": "real-product",
+  "input": "../product-cutout.png",
+  "input_provenance": "Original CC0 toy-car illustration. Subject alpha exported from the same SVG.",
+  "glb_sha256": "0636daca0e1f2e9d21b552d7b04dbeaa1a9e40d7e9d4bd91bdb2751015c734cd",
+  "format": "pass",
+  "reference_fidelity": "Turquoise body, yellow roof surround and dark wheels are identifiable. Window edges and wheel centers are distorted.",
+  "geometry": "fail",
+  "appearance": "fail",
+  "inspection": "Opened ten material and ten clay views of the final GLB. Roof and body have volume. Tires project only shallowly and merge into the body. The underside and opposite side lack distinct structural detail. Clay reveals ripples over the body. Greater rear and bottom detail cannot be inferred with confidence.",
+  "history": [
+    "Direct local CPU inference at grid 64, texture 512. 83.63 seconds after engine imports.",
+    "Inspected initial material and clay views. Corrected missing normals, base color and metallic factor using the identical mesh; no new inference.",
+    "Khronos Validator and browser proof rerun on the repaired GLB. Drag, zoom, offline reload, embedded texture and byte-identical download verified.",
+    "Physical miniature appearance remains below acceptance. This example documents reproducible behavior."
+  ],
+  "api_fee": 0,
+  "scale": "relative",
+  "unseen_surfaces": "inferred"
+}
