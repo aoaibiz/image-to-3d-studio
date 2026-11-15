@@ -4,7 +4,9 @@ import os
 from pathlib import Path
 from .process_group import ProcessGroup
 from .configure import read_pipeline
-from engine.pipeline import GUIDED_PIPELINES, HOST_PIPELINE, LEGACY_PIPELINE, OBSERVED_PIPELINE, PIPELINE, SF3D_PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
+from engine.pipeline import (GUIDED_PIPELINES, HOST_PIPELINE, LEGACY_PIPELINE, OBSERVED_PIPELINE,
+                             PIPELINE, SF3D_OBSERVED_PIPELINE, SF3D_PIPELINE, SF3D_PIPELINES,
+                             SHAPE_PIPELINE, SHAPE_PIPELINES)
 import queue
 import re
 import sqlite3
@@ -39,6 +41,8 @@ class AwaitingHostImage(Exception):
 SHAPE_OUTPUTS = {"shape-master.glb", "appearance.json", "generation.json", "input-processed.png"}
 GUIDED_OUTPUTS = {"guided-paint.json", "guided-views.png", "guided-layout.json", "inferred-paint.png"}
 SHAPE_ERRORS = {
+    "sf3d_observed_review": "材質または塗装の向きを確認できず、仕上げを保留しました。同じジョブに保存した検品記録を確認してください。",
+    "sf3d_observed_error": "生成を中断しました。SF3Dの利用枠、Codexのログインと元の受付を確認し、同じジョブを再開してください。",
     "sf3d_consent": "公式Spaceへの送信と匿名利用枠の使用設定を確認し、同じジョブを再開してください。",
     "sf3d_pending": "公式Spaceの受付は保存されています。同じジョブを再開して結果を確認してください。",
     "sf3d_error": "SF3Dの前景切り抜き・公式Spaceの利用枠・保存した成果物を確認してください。受け付けた生成は再送しません。",
@@ -213,6 +217,10 @@ class JobCore:
                 names.extend(["shape-master.glb", "appearance.json", "generation.json"])
             if job["config"].get("pipeline") == SF3D_PIPELINE:
                 names.extend(["provider-native.glb", "generation.json"])
+            if job["config"].get("pipeline") == SF3D_OBSERVED_PIPELINE:
+                names.extend(["shape-master.glb", "generation.json", "finished-native.glb",
+                              "guided-views.png", "guided-layout.json", "inferred-paint.png",
+                              "hidden-review.json", "region.json", "native-inspection.png", "native-material.json"])
             if folder.exists():
                 names.extend(
                     p.name
@@ -432,6 +440,13 @@ class JobCore:
                 if expected_pipeline is not None and job["config"].get("pipeline") != expected_pipeline:
                     raise PipelineConflict("このキーは別の生成方式のジョブで使用済みです。")
                 return job, False
+            if self.pipeline == SF3D_OBSERVED_PIPELINE:
+                try:
+                    current = read_pipeline(self.directory)
+                except (OSError, ValueError) as exc:
+                    raise PipelineConflict("送信設定を読み取れません。初回設定を確認してStudioを再起動してください。") from exc
+                if current != self.pipeline:
+                    raise PipelineConflict("送信設定が変わりました。Studioを再起動して現在の方式を確認してください。")
             self._validate_image(data)
             job_id = str(uuid.uuid4())
             folder = self.directory / job_id
@@ -451,7 +466,7 @@ class JobCore:
                     stamp,
                     json.dumps(
                         {
-                            **({} if self.pipeline == SF3D_PIPELINE else {
+                            **({} if self.pipeline in SF3D_PIPELINES else {
                                 "resolution": 256 if self.pipeline in SHAPE_PIPELINES else 96, "texture_size": 1024,
                             }),
                             "auto_finish": True,
@@ -673,6 +688,9 @@ class JobCore:
                 "finishing model",
                 "sf3d connecting", "sf3d uploaded", "sf3d preprocess_waiting", "sf3d preprocessed",
                 "sf3d generation_waiting", "sf3d downloading", "sf3d complete", "sf3d exporting",
+                "sf3d observed native", "sf3d observed native_inspection", "sf3d observed observation",
+                "sf3d observed guides", "sf3d observed paint", "sf3d observed orientation",
+                "sf3d observed projection", "sf3d observed export",
                 "segmenting source",
                 "generating shape",
                 "resuming shape",
@@ -704,6 +722,9 @@ class JobCore:
 
     @staticmethod
     def _artifacts_valid(out, settings):
+        if settings.get("pipeline") == SF3D_OBSERVED_PIPELINE:
+            from engine.sf3d_observed_job import valid
+            return valid(out, settings)
         if settings.get("pipeline") == SF3D_PIPELINE:
             from engine.sf3d_shape_job import valid
             return valid(out, settings)
@@ -770,7 +791,7 @@ class JobCore:
         glb = out / "model.glb"
         settings_path = out / "settings.json"
         config = self.get(job_id)["config"]
-        sf3d = config.get("pipeline") == SF3D_PIPELINE
+        sf3d = config.get("pipeline") in SF3D_PIPELINES
         shape = config.get("pipeline") in SHAPE_PIPELINES
         guided = config.get("pipeline") in GUIDED_PIPELINES
         if (
@@ -836,7 +857,8 @@ class JobCore:
                     if p.is_file():
                         p.unlink()
             if sf3d:
-                command = [py, "-u", "-m", "engine.sf3d_shape_job", "--setup", str(self.directory / "engine.json")]
+                module = "engine.sf3d_observed_job" if config["pipeline"] == SF3D_OBSERVED_PIPELINE else "engine.sf3d_shape_job"
+                command = [py, "-u", "-m", module, "--setup", str(self.directory / "engine.json")]
             elif guided:
                 command = [py, "-u", "-m", "engine.guided_shape_job", "--setup", str(self.directory / "engine.json")]
                 if config.get("pipeline") in (HOST_PIPELINE, OBSERVED_PIPELINE):
@@ -912,7 +934,7 @@ class JobCore:
             or not all((out / name).is_file() for name in manifest["files"])
         ):
             raise RuntimeError("proof hash mismatch")
-        if config.get("pipeline") in (PIPELINE, SF3D_PIPELINE, *SHAPE_PIPELINES):
+        if config.get("pipeline") in (PIPELINE, *SF3D_PIPELINES, *SHAPE_PIPELINES):
             source = None
             raw = settings.get("raw_export", "")
             if sf3d:

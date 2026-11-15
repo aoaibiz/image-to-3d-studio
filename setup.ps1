@@ -1,6 +1,6 @@
 param([string]$CachedWeights = '', [switch]$TripoSG, [switch]$SendPhotoAndGuidesToOpenAI, [switch]$UseCodexHost, [switch]$ChatGPTPhotoAnalysis, [switch]$AllowOfficialSpace)
-if ($AllowOfficialSpace -and ($TripoSG -or $SendPhotoAndGuidesToOpenAI -or $ChatGPTPhotoAnalysis -or $UseCodexHost)) {
-  throw 'Select the official SF3D Space or one local engine per setup.'
+if ($AllowOfficialSpace -and ($TripoSG -or $UseCodexHost -or ([bool]$SendPhotoAndGuidesToOpenAI -ne [bool]$ChatGPTPhotoAnalysis))) {
+  throw 'For SF3D with ChatGPT analysis and paint, use -AllowOfficialSpace -ChatGPTPhotoAnalysis -SendPhotoAndGuidesToOpenAI together.'
 }
 if ($AllowOfficialSpace) {
   Write-Host 'The selected foreground photo is sent to the official Stability AI Hugging Face Space using your anonymous ZeroGPU allowance for evaluation. Check the provider terms for your intended use.'
@@ -12,7 +12,7 @@ if ($UseCodexHost -and !$SendPhotoAndGuidesToOpenAI) {
   throw 'Use -UseCodexHost with -SendPhotoAndGuidesToOpenAI to enable photo transfer for the native host.'
 }
 if ($SendPhotoAndGuidesToOpenAI) {
-  $TripoSG = $true
+  if (!$AllowOfficialSpace) { $TripoSG = $true }
   Write-Host 'Guided paint sends a photo and two rendered views to OpenAI using your ChatGPT plan. Check your remaining allowance and credit settings before enabling it. This preview cannot measure account charges.'
   if ($ChatGPTPhotoAnalysis) { Write-Host 'Photo analysis also sends one metadata-stripped photo to OpenAI for a text observation. Each job permits one observation and one ImageGen request.' }
 }
@@ -48,7 +48,11 @@ if (!(Test-Path $zip) -or (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -
 Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $PSScriptRoot '.runtime\validator') -Force
 if ((Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() -ne $exeHash) { throw 'Khronos validator executable hash mismatch' }
 if ($AllowOfficialSpace) {
-  & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -m studio.configure --engine sf3d-official-preview --allow-official-space
+  $engineOptions = @('--engine', 'sf3d-official-preview', '--allow-official-space')
+  if ($ChatGPTPhotoAnalysis) {
+    $engineOptions = @('--engine', 'sf3d-observed', '--allow-official-space', '--chatgpt-photo-analysis', '--allow-send-to-openai')
+  }
+  & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -m studio.configure @engineOptions
   if ($LASTEXITCODE) { throw 'Could not save SF3D photo and anonymous quota settings.' }
 }
 if ($TripoSG) {

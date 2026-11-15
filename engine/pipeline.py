@@ -12,6 +12,9 @@ SHAPE_PIPELINE = "triposg-local-v1"
 GUIDED_PIPELINE = "triposg-codex-guided-v1"
 HOST_PIPELINE = "triposg-host-guided-v1"
 OBSERVED_PIPELINE = "triposg-codex-observed-v1"
+SF3D_OBSERVED_PIPELINE = "sf3d-codex-observed-v1"
+SF3D_PIPELINES = (SF3D_PIPELINE, SF3D_OBSERVED_PIPELINE)
+OBSERVED_PIPELINES = (OBSERVED_PIPELINE, SF3D_OBSERVED_PIPELINE)
 OBSERVATION_METHODS = ("codex-photo-observations-v1", "codex-photo-observations-v2")
 OBSERVED_AGREEMENT = {
     "schema": 1, "provider": "OpenAI Codex CLI / ChatGPT vision and image_generation",

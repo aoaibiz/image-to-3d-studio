@@ -7,14 +7,19 @@ import tempfile
 from pathlib import Path
 
 from engine.pipeline import (GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVED_AGREEMENT,
-                             OBSERVED_PIPELINE, PIPELINE, SF3D_AGREEMENT, SF3D_PIPELINE, SHAPE_PIPELINE)
+                             OBSERVED_PIPELINE, OBSERVED_PIPELINES, PIPELINE, SF3D_AGREEMENT,
+                             SF3D_OBSERVED_PIPELINE, SF3D_PIPELINE, SF3D_PIPELINES, SHAPE_PIPELINE)
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINES = {SF3D_PIPELINE: SF3D_PIPELINE, "triposr": PIPELINE, "triposg": SHAPE_PIPELINE, "triposg-guided": GUIDED_PIPELINE,
-           "triposg-guided-host": HOST_PIPELINE, "triposg-observed": OBSERVED_PIPELINE}
+           "triposg-guided-host": HOST_PIPELINE, "triposg-observed": OBSERVED_PIPELINE,
+           "sf3d-observed": SF3D_OBSERVED_PIPELINE}
 
 
 def agreement(pipeline):
+    if pipeline == SF3D_OBSERVED_PIPELINE:
+        return {"schema": 1, "shape": SF3D_AGREEMENT, "appearance": OBSERVED_AGREEMENT,
+                "max_shape_inferences_per_job": 1}
     if pipeline == SF3D_PIPELINE:
         return SF3D_AGREEMENT
     if pipeline == OBSERVED_PIPELINE:
@@ -35,8 +40,10 @@ def read_pipeline(directory):
         raise ValueError(
             "生成設定が無効です。studio.configure でローカルエンジンを設定し直してください。"
         )
-    if doc["pipeline"] == SF3D_PIPELINE and doc != {"pipeline": SF3D_PIPELINE, "agreement": SF3D_AGREEMENT}:
-        raise ValueError("公式Spaceへの写真送信と匿名利用枠の使用を初回設定で許可してください。")
+    if doc["pipeline"] in SF3D_PIPELINES:
+        expected = {"pipeline": doc["pipeline"], "agreement": agreement(doc["pipeline"])}
+        if json.dumps(doc, sort_keys=True) != json.dumps(expected, sort_keys=True):
+            raise ValueError("選択した方式の送信先と利用枠を初回設定で確認してください。")
     if doc["pipeline"] in GUIDED_PIPELINES:
         if doc.get("agreement") != agreement(doc["pipeline"]):
             raise ValueError("背面の推定には、元写真と立体の確認画像をOpenAIへ送信する初回設定が必要です。")
@@ -47,14 +54,14 @@ def configure(directory, engine, *, allow_send_to_openai=False, chatgpt_photo_an
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     pipeline = ENGINES[engine]
-    if (pipeline == OBSERVED_PIPELINE) != bool(chatgpt_photo_analysis):
-        raise ValueError("写真のChatGPT解析には --engine triposg-observed と --chatgpt-photo-analysis を一緒に指定してください。")
+    if (pipeline in OBSERVED_PIPELINES) != bool(chatgpt_photo_analysis):
+        raise ValueError("写真の解析には対象の observed エンジンと --chatgpt-photo-analysis を指定してください。")
     config = {"pipeline": pipeline}
-    if (pipeline == SF3D_PIPELINE) != bool(allow_official_space):
-        raise ValueError("公式Spaceの評価には --engine sf3d-official-preview と --allow-official-space を一緒に指定してください。")
-    if pipeline == SF3D_PIPELINE:
-        config["agreement"] = SF3D_AGREEMENT
-    if pipeline in GUIDED_PIPELINES:
+    if (pipeline in SF3D_PIPELINES) != bool(allow_official_space):
+        raise ValueError("公式Spaceの評価には SF3D エンジンと --allow-official-space を指定してください。")
+    if pipeline in SF3D_PIPELINES:
+        config["agreement"] = agreement(pipeline)
+    if pipeline in (*GUIDED_PIPELINES, SF3D_OBSERVED_PIPELINE):
         if not allow_send_to_openai:
             raise ValueError("OpenAIへの元写真・確認画像の送信を許可するには --allow-send-to-openai を指定してください。")
         config["agreement"] = agreement(pipeline)

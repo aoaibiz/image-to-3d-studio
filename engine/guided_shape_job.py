@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from engine import local_shape_job, triposg_cpu as sg
-from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS, OBSERVED_PIPELINE, SHAPE_PIPELINE
+from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS, OBSERVED_PIPELINE, OBSERVED_PIPELINES, SHAPE_PIPELINE
 
 EDITABLE = {
     "model.glb",
@@ -120,9 +120,11 @@ def _observations(source, work, source_sha):
     return provider_observations(report, source_sha)
 
 
-def _chatgpt_observations(source, work, source_sha, setup):
+def _chatgpt_observations(source, work, source_sha, setup, *, pipeline=OBSERVED_PIPELINE):
     from engine import codex_photo_observations as observer
 
+    if pipeline not in OBSERVED_PIPELINES:
+        raise ValueError("この生成方式には写真の外部解析を使用できません。")
     cache = work / "photo-observer"
     # Any downstream checkpoint proves the observation already took place.
     # Recovery reads the original response and must never launch another turn.
@@ -132,11 +134,11 @@ def _chatgpt_observations(source, work, source_sha, setup):
     if has_checkpoint or (cache / "receipt.json").exists():
         report = observer.recover_photo(source, cache)
     else:
-        _consent(setup, OBSERVED_PIPELINE)
+        _consent(setup, pipeline)
 
         def consent_now():
             try:
-                _consent(setup, OBSERVED_PIPELINE)
+                _consent(setup, pipeline)
             except StageError:
                 return False
             return True

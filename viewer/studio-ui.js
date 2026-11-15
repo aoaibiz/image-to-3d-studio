@@ -46,6 +46,14 @@ Object.assign(stages, {
   'sf3d generation_waiting': '公式Spaceで立体生成を待っています', 'sf3d downloading': '材質付きの立体を取得しています',
   'sf3d complete': '公式の立体を取得しました', 'sf3d exporting': '表示用の向きと編集用データを整えています',
   'segmenting source': '背景から被写体を切り出しています',
+  'sf3d observed native': 'SF3Dで材質付きの立体を生成しています',
+  'sf3d observed observation': 'ChatGPTで写真の色、模様、部品を確認しています',
+  'sf3d observed native_inspection': '形状と材質を正面・背面から確認しています',
+  'sf3d observed guides': '形状に合わせて背面の塗装用画像を準備しています',
+  'sf3d observed paint': 'OpenAIで写真に写っていない面の塗装を推定しています',
+  'sf3d observed orientation': '推定した塗装と視点の向きを照合しています',
+  'sf3d observed projection': '元写真に写っていない領域に塗装を合わせています',
+  'sf3d observed export': '材質付きGLBと編集用データを書き出しています',
   'generating shape': '立体の形を推定しています',
   'resuming shape': '保存した計算結果から形状の生成を再開しています',
   'painting model': '入力画像をもとに立体を着色しています',
@@ -70,9 +78,14 @@ async function readEngine() {
     const local = engine.local === true && [tripoSR, tripoSG].includes(engine.pipeline);
     const guided = [guidedSG, 'triposg-host-guided-v1', 'triposg-codex-observed-v1'].includes(engine.pipeline) && engine.local === false && engine.recipient === 'OpenAI ChatGPT';
     const sf3d = engine.pipeline === 'sf3d-official-preview' && engine.local === false && engine.recipient === 'Stability AI / Hugging Face';
-    if (!local && !guided && !sf3d) throw Error('生成方式と送信先を確認できません。');
+    const observedSF3D = engine.pipeline === 'sf3d-codex-observed-v1' && engine.local === false
+      && Array.isArray(engine.recipients) && engine.recipients.length === 2
+      && engine.recipients[0] === 'Stability AI / Hugging Face' && engine.recipients[1] === 'OpenAI ChatGPT';
+    if (!local && !guided && !sf3d && !observedSF3D) throw Error('生成方式と送信先を確認できません。');
     pipeline = engine.pipeline;
-    if (sf3d) {
+    if (observedSF3D) {
+      info.textContent = '評価用のStable Fast 3Dを使用します。切り抜いた写真をHugging Face上のStability AI公式Spaceに送り、匿名枠で立体を1回生成します。OpenAIにはメタデータを除いた元写真を送り、本人のChatGPT利用枠で外観を1回解析します。塗装が必要な場合は写真と立体の確認画像を送り、画像を1回生成します。';
+    } else if (sf3d) {
       info.textContent = '評価用の Stable Fast 3D を使用します。切り抜いた写真を Hugging Face 上の Stability AI 公式Spaceに送り、匿名の利用枠で材質付きの立体を生成します。';
     } else if (guided) {
       info.textContent = '形状はこの端末で生成します。背面の塗装を推定するため、元写真と立体の確認画像をOpenAIに送信し、本人のChatGPT利用枠を使用します。';
@@ -151,12 +164,15 @@ async function loadResult(job) {
     comparison.hidden = !(sheet === actualHash + '_appearance-comparison.jpg' && job.artifacts.includes(sheet));
     if (!comparison.hidden) comparison.href = '/api/jobs/' + job.id + '/artifacts/' + sheet;
     const resultSG = (settings.pipeline || job.config?.pipeline) === tripoSG;
-    const resultSF3D = settings.pipeline === 'sf3d-official-preview';
+    const resultSF3D = ['sf3d-official-preview', 'sf3d-codex-observed-v1'].includes(settings.pipeline);
     front.textContent = resultSF3D ? '推定入力側 +Z' : resultSG ? '+Z 視点' : '入力側 +Z';
     const selectedPose = !resultSG && settings.source_selection?.detected_count ? `全${settings.source_selection.detected_count}個の候補から上段の中央に近い1個を選びました。` : '';
     const shapeNote = resultSG
       ? 'TripoSG が立体の形と向きを推定しました。入力画像に写った側は、立体を回して確認してください。'
-      : resultSF3D ? 'SF3Dが形状と材質を推定しました。背面の模様と薄い部品を確認してください。' : finishes[settings.finish_profile] || '';
+      : settings.pipeline === 'sf3d-codex-observed-v1'
+        ? (settings.appearance_mode === 'native_material' ? '元のSF3D材質を保持しました。' : '背面の塗装を推定しました。')
+          + '写真に写っていない面と薄い部品を確認してください。'
+        : resultSF3D ? 'SF3Dが形状と材質を推定しました。背面の模様と薄い部品を確認してください。' : finishes[settings.finish_profile] || '';
     const pose = document.querySelector('#pose-preview');
     pose.hidden = !selectedPose || !job.artifacts.includes('input-processed.png');
     if (!pose.hidden) pose.querySelector('img').src = `/api/jobs/${job.id}/artifacts/input-processed.png`;

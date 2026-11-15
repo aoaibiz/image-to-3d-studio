@@ -521,14 +521,15 @@ def _reference_board(source, guide, path):
 
 
 def _require_consent(setup, pipeline="triposg-codex-guided-v1"):
-    from engine.pipeline import GUIDED_PIPELINE, OBSERVED_AGREEMENT, OBSERVED_PIPELINE
+    from engine.pipeline import GUIDED_PIPELINE, OBSERVED_PIPELINES
+    from studio.configure import agreement
     try:
         actual = json.loads(_bytes(setup, 32768))
     except (ValueError, OSError, TypeError, TurnaroundProviderError):
         actual = None
-    if pipeline not in {GUIDED_PIPELINE, OBSERVED_PIPELINE}:
+    if pipeline not in (GUIDED_PIPELINE, *OBSERVED_PIPELINES):
         raise TurnaroundProviderError("このジョブには画像生成の送信契約がありません。")
-    expected = {"pipeline": pipeline, "agreement": OBSERVED_AGREEMENT if pipeline == OBSERVED_PIPELINE else AGREEMENT}
+    expected = {"pipeline": pipeline, "agreement": agreement(pipeline)}
     if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
         raise TurnaroundProviderError(
             "利用には OpenAI への画像送信と本人の ChatGPT 利用枠への同意が必要です。"
@@ -666,7 +667,7 @@ def _appearance_prompt(base_prompt, manifest, photo_sha, *, replay_906ad8):
 
 def generate_guided_paint(input_path, guide_path, manifest_path, job_dir, *, setup, pipeline="triposg-codex-guided-v1"):
     """Submit once per job; return a proposed appearance sheet for separate quality review."""
-    from engine.pipeline import OBSERVATION_METHODS, OBSERVED_PIPELINE
+    from engine.pipeline import OBSERVATION_METHODS, OBSERVED_PIPELINES
 
     _require_consent(setup, pipeline)
     source = _bytes(input_path)
@@ -690,7 +691,7 @@ def generate_guided_paint(input_path, guide_path, manifest_path, job_dir, *, set
         )
     brief = geometry.get("visual_brief")
     remote_observation = isinstance(brief, dict) and brief.get("method") in OBSERVATION_METHODS
-    if (pipeline == OBSERVED_PIPELINE) != remote_observation:
+    if (pipeline in OBSERVED_PIPELINES) != remote_observation:
         raise TurnaroundProviderError("外観解析の方式が受付時の送信設定と一致しません。")
     try:
         with Image.open(io.BytesIO(guide)) as im:

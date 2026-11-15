@@ -12,7 +12,9 @@ import subprocess
 import sys
 from urllib.parse import urlsplit, parse_qs
 from .core import JobCore, JobError, PipelineConflict, MAX_INPUT, ROOT, TERMINAL
-from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS, OBSERVED_PIPELINE, SF3D_PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
+from engine.pipeline import (GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS,
+                             OBSERVED_PIPELINE, SF3D_OBSERVED_PIPELINE, SF3D_PIPELINES,
+                             SHAPE_PIPELINE, SHAPE_PIPELINES)
 
 STATIC = {
     "/": "viewer/index.html",
@@ -114,6 +116,28 @@ def shape_doctor(core):
     return result
 
 
+def sf3d_engine_info(pipeline):
+    info = {"pipeline": pipeline, "local": False}
+    if pipeline == SF3D_OBSERVED_PIPELINE:
+        return {**info, "recipients": ["Stability AI / Hugging Face", "OpenAI ChatGPT"]}
+    return {**info, "recipient": "Stability AI / Hugging Face"}
+
+
+def add_codex_checks(result, *, observation):
+    from engine.guided_provider import preflight
+    paint = preflight()
+    result["diagnostics"]["guided_paint"] = paint
+    if not paint.get("available"):
+        result.update(ok=False, message=paint.get("reason") or "Codexの画像生成環境を確認してください。")
+    if observation:
+        from engine.codex_photo_observations import preflight as observer_preflight
+        photo = {**observer_preflight(), "method": OBSERVATION_METHODS[-1],
+                 "recoverable_methods": list(OBSERVATION_METHODS)}
+        result["diagnostics"]["photo_observer"] = photo
+        if not photo.get("available"):
+            result.update(ok=False, message=photo.get("reason") or "元写真を解析するCodexの環境を確認してください。")
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -167,22 +191,24 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/engine":
             pipeline = self.server.core.pipeline
-            if pipeline == SF3D_PIPELINE:
-                self.send_json(200, {"pipeline": pipeline, "local": False, "recipient": "Stability AI / Hugging Face"})
+            if pipeline in SF3D_PIPELINES:
+                self.send_json(200, sf3d_engine_info(pipeline))
                 return
             self.send_json(200, {"pipeline": pipeline, "local": pipeline not in GUIDED_PIPELINES,
                                  **({"recipient": "OpenAI ChatGPT"} if pipeline in GUIDED_PIPELINES else {})})
             return
         if path == "/api/doctor":
-            if self.server.core.pipeline == SF3D_PIPELINE:
+            if self.server.core.pipeline in SF3D_PIPELINES:
                 checks = {name: (ROOT / path).is_file() for name, path in {
                     "python": ".runtime/venv/Scripts/python.exe", "foreground_model": ".runtime/u2net/u2net.onnx",
                     "validator": ".runtime/validator/gltf_validator.exe", "viewer": "viewer/node_modules/three/build/three.module.js",
                 }.items()}
                 checks["node"] = bool(shutil.which("node"))
-                self.send_json(200, {"pipeline": SF3D_PIPELINE, "local": False, "recipient": "Stability AI / Hugging Face",
-                                     "ok": all(checks.values()), "checks": checks,
-                                     "diagnostics": {"remote_availability": "未確認。実行時に公式Spaceの混雑・匿名利用枠を確認します。"}})
+                result = {**sf3d_engine_info(self.server.core.pipeline), "ok": all(checks.values()), "checks": checks,
+                          "diagnostics": {"remote_availability": "未確認。実行時に公式Spaceの混雑・匿名利用枠を確認します。"}}
+                if self.server.core.pipeline == SF3D_OBSERVED_PIPELINE:
+                    add_codex_checks(result, observation=True)
+                self.send_json(200, result)
                 return
             if self.server.core.pipeline in SHAPE_PIPELINES:
                 result = shape_doctor(self.server.core)
@@ -208,19 +234,8 @@ class Handler(BaseHTTPRequestHandler):
                     result["diagnostics"]["guided_paint"] = {"provider": "Codex host / OpenAI ImageGen",
                                                              "host_image_tool": "unverified until a connected host returns a generated image"}
                 if self.server.core.pipeline in (GUIDED_PIPELINE, OBSERVED_PIPELINE):
-                    from engine.guided_provider import preflight
-                    provider = preflight()
                     result.update(pipeline=self.server.core.pipeline, local=False, recipient="OpenAI ChatGPT")
-                    result["diagnostics"]["guided_paint"] = provider
-                    if not provider.get("available"):
-                        result.update(ok=False, message=provider.get("reason") or "Codexの画像生成環境を確認してください。")
-                if self.server.core.pipeline == OBSERVED_PIPELINE:
-                    from engine.codex_photo_observations import preflight
-                    observation = {**preflight(), "method": OBSERVATION_METHODS[-1],
-                                   "recoverable_methods": list(OBSERVATION_METHODS)}
-                    result["diagnostics"]["photo_observer"] = observation
-                    if not observation.get("available"):
-                        result.update(ok=False, message=observation.get("reason") or "元写真を解析するCodexの環境を確認してください。")
+                    add_codex_checks(result, observation=self.server.core.pipeline == OBSERVED_PIPELINE)
                 self.send_json(200, result)
                 return
             checks = {
