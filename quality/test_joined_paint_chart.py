@@ -54,7 +54,7 @@ def cylinder_surface(fold=False):
         y=v.ravel(),
         x=a.ravel(),
         old=np.full((*shape, 3), 115, np.uint8),
-        locked=observed.reshape(shape),
+        locked=observed.reshape(shape).copy(),
         observation={"observed_face_cues": {}},
     )
 
@@ -83,6 +83,27 @@ class JoinedChartTests(unittest.TestCase):
             chart._transfer(s, c, Image.fromarray(c["guide"]))
         with self.assertRaises(chart.ChartUnavailable):
             chart._transfer(s, c, Image.fromarray(np.asarray(result)[:, ::-1]))
+
+    def test_natural_completion_never_masks_an_incompatible_immutable_band(self):
+        s = cylinder_surface()
+        c = chart._build(s)
+        h, w = c["anchor"].shape
+        y, x = np.mgrid[:h, :w]
+        pattern = np.stack(
+            (
+                70 + 60 * np.sin(x * 0.14),
+                150 + 45 * np.cos(y * 0.22),
+                210 - 25 * np.sin(x * 0.23),
+            ),
+            axis=2,
+        )
+        rgb = np.where(c["anchor"][:, :, None], c["photo"], pattern)
+        im = Image.fromarray(cv2.resize(rgb[::-1].astype("uint8"), chart.SIZE))
+        locked = c["usable"] & (c["az"] > 148) & (c["az"] < 193)
+        s["locked"][s["y"][locked], s["x"][locked]] = True
+        s["old"][s["y"][locked], s["x"][locked]] = [255, 0, 255]
+        with self.assertRaisesRegex(chart.ChartUnavailable, "protected native band"):
+            chart._transfer(s, c, im)
 
     def test_confirmation_requires_two_margins_and_measured_geometry(self):
         s = cylinder_surface()
@@ -218,3 +239,4 @@ class JoinedChartTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

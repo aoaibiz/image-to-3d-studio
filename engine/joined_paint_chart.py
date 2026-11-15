@@ -449,6 +449,17 @@ def _transfer(surface, chart, sheet):
     edit = chart["geometry"] & ~chart["anchor"]
     dist = ndimage.distance_transform_edt(np.pad(edit, 1))[1:-1, 1:-1]
     margin = ndimage.map_coordinates(dist, coords, order=1, mode="constant")
+    locked_in_strip = (
+        chart["usable"] & surface["locked"][y, x] & ~surface["observed"] & (margin >= 3)
+    )
+    native = surface["old"][y, x].astype(float)
+    # Do not hide a collision behind the immutability promise: a large retained
+    # band differing sharply from the proposed continuation would remain visible.
+    large_delta = np.max(np.abs(native - values), axis=1) > 56
+    fixed_count = int(locked_in_strip.sum())
+    collision = int(np.count_nonzero(locked_in_strip & large_delta))
+    if collision >= 40 and collision > max(0.18 * fixed_count, 0.012 * eligible.sum()):
+        raise ChartUnavailable("Proposed paint conflicts with a protected native band")
     blend = np.where(eligible, np.clip((margin - 0.55) / 2.5, 0.0, 1.0), 0.0)[:, None]
     old = surface["old"]
     updated = old.copy()
@@ -469,6 +480,8 @@ def _transfer(surface, chart, sheet):
         unsupported_surface_changed=0,
         source_observed_changed=0,
         anchor_scores=scores,
+        protected_hidden_samples=fixed_count,
+        divergent_protected_samples=collision,
         tested_unique_source_patches=len(chart["unique_patches"]),
         strongest_unique_source_patch_score=strongest,
     )
