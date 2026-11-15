@@ -401,3 +401,204 @@ class ArchivedIntegration(unittest.TestCase):
             self.assertGreater(region["changed_uv"], 0)
             self.assertEqual(job.run(src, out, setup=setup), result)
             self.assertEqual(api.joins, [4, 5])
+
+
+class OptionalShapeTests(unittest.TestCase):
+    def _stage(self, root):
+        from engine.finish_export import embed_master
+        from engine.sf3d_provider import native_glb
+        from quality.test_sf3d_provider import fixture_glb, png
+
+        source = root / "original.png"
+        source.write_bytes(png())
+        stage = root / "stage"
+        stage.mkdir()
+        out = root / "out"
+        response = (
+            out / "sf3d-observed-work/appearance/photo-observer/last-message.json"
+        )
+        response.parent.mkdir(parents=True)
+        files.atomic_json(response, {"test": "fixture"})
+        for name in ("model.glb", "shape-master.glb"):
+            (stage / name).write_bytes(fixture_glb())
+        for name in ("input-processed.png", "native-inspection.png"):
+            (stage / name).write_bytes(png())
+        embed_master(stage / "model.glb", stage / "editable.gltf")
+        asset = native_glb(stage / "model.glb")
+        src = files.digest(source)
+        camera = {"display_rotation_xyzw": [0, 1, 0, 0]}
+        observer = {
+            "state": "completed",
+            "source_sha256": src,
+            "unseen_surface_observed": False,
+            "output_sha256": files.digest(response),
+            "request_id": "fixture",
+        }
+        files.atomic_json(
+            response.parent.parent / "observation-seal.json",
+            {"receipt": observer, "visual_brief": {"source_sha256": src}},
+        )
+        files.atomic_json(
+            stage / "generation.json",
+            {
+                "source_sha256": src,
+                "external_image_generations": 0,
+                "photo_observation": observer,
+                "camera": camera,
+                "registration": {
+                    "mesh_file_sha256": asset["sha256"],
+                    "foreground_file_sha256": files.digest(
+                        stage / "input-processed.png"
+                    ),
+                },
+                "display_glb_sha256": asset["sha256"],
+                "shape": {
+                    "camera": camera,
+                    "native_sha256": asset["sha256"],
+                    "output_sha256": asset["sha256"],
+                },
+            },
+        )
+        files.atomic_json(
+            stage / "native-material.json",
+            {
+                "source_sha256": src,
+                "model_sha256": asset["sha256"],
+                "inspection_sha256": files.digest(stage / "native-inspection.png"),
+                "hold_projection": False,
+            },
+        )
+        meta = {
+            "pipeline": job.PIPELINE,
+            "appearance_mode": "native_material",
+            "input_sha256": src,
+            "visual_quality": "needs_review",
+            "auto_finish_complete": True,
+            "triangles": 1,
+            "embedded_images": 1,
+            "glb_sha256": asset["sha256"],
+            "camera": camera,
+            "artifact_sha256": {f.name: files.digest(f) for f in stage.iterdir()},
+        }
+        files.atomic_json(stage / "settings.json", meta)
+        return stage, out, source, response, meta
+
+    def test_no_evidence_preserves_display_and_previous_paint_master(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stage, out, source, raw, old = self._stage(Path(tmp))
+
+            def no_op(**args):
+                self.assertEqual(
+                    args["registration"]["shape_hypothesis_inputs"][
+                        "observer_output_sha256"
+                    ],
+                    files.digest(raw),
+                )
+                self.assertFalse(args["output"].exists())
+                return {
+                    "decision": "unchanged",
+                    "method": "test",
+                    "evidence": {},
+                    "reason": "ambiguous closure",
+                }
+
+            result = job._finish_hypothesis(
+                stage, out, source, job.ShapeEditor(no_op, "1" * 64)
+            )
+            self.assertTrue(job.valid(stage, result))
+            self.assertEqual(result["glb_sha256"], old["glb_sha256"])
+            self.assertEqual(
+                result["artifact_sha256"]["editable.gltf"],
+                old["artifact_sha256"]["editable.gltf"],
+            )
+            report = files.read_json(stage / "shape-hypothesis.json")
+            self.assertFalse(report["dimensions_observed"])
+            self.assertEqual(report["decision"], "unchanged")
+            self.assertFalse((stage / "shape-alternative.glb").exists())
+
+    def test_damaged_source_or_observation_stops_the_editor(self):
+        for key in ("source", "observer"):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as tmp:
+                stage, out, src, raw, _ = self._stage(Path(tmp))
+                (src if key == "source" else raw).write_bytes(b"changed")
+                with self.assertRaises(ValueError):
+                    job._finish_hypothesis(
+                        stage,
+                        out,
+                        src,
+                        job.ShapeEditor(
+                            lambda **_: self.fail("unbound editor"), "1" * 64
+                        ),
+                    )
+                self.assertFalse((stage / "shape-hypothesis.json").exists())
+
+
+@unittest.skipUnless(
+    os.getenv("STUDIO_SF3D_SHAPE_REPLAY"),
+    "Private sealed painted-geometry trial is optional.",
+)
+class ArchivedShapeIntegration(unittest.TestCase):
+    def test_real_composer_emits_an_inferred_alternative_with_zero_reposts(self):
+        import base64
+        import json
+        import struct
+
+        root = Path(os.environ["STUDIO_SF3D_SHAPE_REPLAY"])
+        source = root / "input.jpg"
+        work = (
+            root
+            / "run/store/b7bc98b1-c8d3-4ccd-8e40-7700ad1abbcb/output/sf3d-observed-work"
+        )
+        frozen = root / "run/evidence/native-fit-review/coherent"
+        setup = root / "run/store/engine.json"
+        src = files.digest(source)
+        self.assertEqual(
+            src, "f1b9008ad284105fdc3f5fd7bb27b3af7872f1e3a1c2b0f5ea87d4614984c879"
+        )
+        with contextlib.ExitStack() as stack:
+            retained = os.getenv("STUDIO_SF3D_SHAPE_REPLAY_OUTPUT")
+            if retained:
+                out = Path(retained)
+                out.mkdir(exist_ok=False)
+            else:
+                out = Path(stack.enter_context(tempfile.TemporaryDirectory()))
+            shutil.copytree(
+                work,
+                out / "sf3d-observed-work",
+                ignore=shutil.ignore_patterns("run.lock"),
+            )
+            for method in ("requests.sessions.Session.request", "subprocess.Popen"):
+                stack.enter_context(
+                    patch(
+                        method,
+                        side_effect=AssertionError("Unpermitted external submission"),
+                    )
+                )
+            meta = job.run(source, out, setup=setup)
+            self.assertTrue(job.valid(out, meta))
+            self.assertEqual(meta["shape_hypothesis"]["decision"], "alternative")
+            report = files.read_json(out / "shape-hypothesis.json")
+            self.assertEqual(report["source_sha256"], src)
+            self.assertEqual(meta["glb_sha256"], files.digest(frozen / "model.glb"))
+            self.assertEqual(
+                report["candidate"]["sha256"],
+                files.digest(out / "shape-alternative.glb"),
+            )
+            self.assertFalse(report["dimensions_observed"])
+            self.assertGreater(report["candidate"]["new_faces"], 0)
+            self.assertEqual(
+                report["painted_before"]["faces"]
+                - report["candidate"]["removed_faces"]
+                + report["candidate"]["new_faces"],
+                report["candidate"]["faces"],
+            )
+            raw = (out / "shape-alternative.glb").read_bytes()
+            size = struct.unpack_from("<I", raw, 12)[0]
+            editable = json.loads((out / "shape-alternative.gltf").read_bytes())[
+                "buffers"
+            ][0]
+            self.assertEqual(
+                base64.b64decode(editable["uri"].split(",", 1)[1]),
+                raw[28 + size : 28 + size + editable["byteLength"]],
+            )
+            self.assertEqual(job.run(source, out, setup=setup), meta)

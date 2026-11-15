@@ -2,9 +2,15 @@
 
 import argparse
 import contextlib
+import hashlib
+import json
+import math
 import os
+import re
 import shutil
 import tempfile
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from engine import triposg_cpu as files
@@ -424,7 +430,363 @@ def _native_inspection(base, reg, observations, report_dir):
         )
 
 
-def _publish(stage, out, names, source_sha):
+@dataclass(frozen=True)
+class ShapeEditor:
+    """Internal adapter identity; the packaged method needs no user-supplied settings."""
+
+    propose: Callable
+    implementation_sha256: str
+    allow_primary: bool = False
+
+
+_RELEASED_SHAPE_EDITOR = object()
+
+
+def _released_shape_editor():
+    from engine import inferred_cavity
+
+    return ShapeEditor(
+        inferred_cavity.editor, files.digest(Path(inferred_cavity.__file__))
+    )
+
+
+SHAPE_FILES = {
+    "unchanged": {"shape-hypothesis.json"},
+    "alternative": {
+        "shape-hypothesis.json",
+        "shape-alternative.glb",
+        "shape-alternative.gltf",
+    },
+    "applied": {"shape-hypothesis.json", "pre-hypothesis.glb"},
+}
+
+
+def _shape_candidate(before, after):
+    """Accept only an appended interior and an ordered subset of the original triangles."""
+    import numpy as np
+
+    from engine.sf3d_provider import MAX_GLB
+    from quality.inspection import load_glb
+
+    if after.stat().st_size > MAX_GLB:
+        raise ValueError("補完後のGLBが上限を超えています。")
+    _, old, original = load_glb(before)
+    raw, new, binary = load_glb(after)
+    same_keys = {"buffers", "bufferViews", "accessors", "meshes", "materials"}
+    if (
+        old.keys() != new.keys()
+        or any(old[k] != new[k] for k in old if k not in same_keys)
+        or not binary.startswith(original)
+        or len(new["buffers"]) != 1
+        or set(new["buffers"][0]) != {"byteLength"}
+        or not 0 <= len(binary) - new["buffers"][0]["byteLength"] <= 3
+        or len(old["meshes"]) != len(new["meshes"])
+        or len(new["meshes"]) != 1
+    ):
+        raise ValueError("元の塗装バッファーまたはシーンが変更されました。")
+    extra_attrs = len(new["accessors"]) - len(old["accessors"])
+    if extra_attrs not in (4, 5):
+        raise ValueError("補完形状の属性構成が不明です。")
+    for key, extra in (
+        ("bufferViews", extra_attrs),
+        ("accessors", extra_attrs),
+        ("materials", 1),
+    ):
+        count = len(old[key])
+        if len(new[key]) != count + extra or new[key][:count] != old[key]:
+            raise ValueError("元の材質・法線・UVまたは頂点定義が変わりました。")
+    old_mesh, new_mesh = old["meshes"][0], new["meshes"][0]
+    if (
+        any(new_mesh.get(k) != v for k, v in old_mesh.items() if k != "primitives")
+        or len(old_mesh["primitives"]) != 1
+        or len(new_mesh["primitives"]) != 2
+    ):
+        raise ValueError("編集したメッシュの構成が不明です。")
+    first, interior = new_mesh["primitives"]
+    previous = old_mesh["primitives"][0]
+    n = len(old["accessors"])
+    start = n + (extra_attrs == 5)
+    attrs = {"POSITION": start + 1, "NORMAL": start + 2}
+    if extra_attrs == 5:
+        attrs["COLOR_0"] = n + 1
+    if first != {**previous, "indices": n} or interior != {
+        "attributes": attrs,
+        "indices": start + 3,
+        "material": len(old["materials"]),
+        "mode": 4,
+    }:
+        raise ValueError("外面の材質または補完領域の構成が異なります。")
+    mat = new["materials"][-1]
+    pbr = mat.get("pbrMetallicRoughness", {})
+    if set(mat) - {"name", "pbrMetallicRoughness"} or set(pbr) - {
+        "baseColorFactor",
+        "metallicFactor",
+        "roughnessFactor",
+    }:
+        raise ValueError("想定外の補完材質です。")
+    rgba = pbr.get("baseColorFactor", [1] * 4)
+    coeff = [*rgba, pbr.get("metallicFactor", 1), pbr.get("roughnessFactor", 1)]
+    if (
+        len(rgba) != 4
+        or rgba[3] != 1
+        or any(type(x) not in (int, float) or not 0 <= x <= 1 for x in coeff)
+    ):
+        raise ValueError("補完材質の色または質感が不正です。")
+
+    def array(doc, buf, acc, kind, width):
+        a = doc["accessors"][acc]
+        v = doc["bufferViews"][a["bufferView"]]
+        types = {5123: "<u2", 5125: "<u4"} if width == 1 else {5126: "<f4"}
+        dtype = np.dtype(types[a["componentType"]])
+        count = a["count"]
+        offset = v.get("byteOffset", 0) + a.get("byteOffset", 0)
+        if (
+            a["type"] != kind
+            or type(count) is not int
+            or not 1 <= count <= 1_500_000
+            or v["buffer"] != 0
+            or v.get("byteStride", width * dtype.itemsize) != width * dtype.itemsize
+            or offset < 0
+            or offset + width * dtype.itemsize * count > len(buf)
+            or a.get("byteOffset", 0) + width * dtype.itemsize * count > v["byteLength"]
+        ):
+            raise ValueError("補完メッシュのデータ範囲が不正です。")
+        return np.frombuffer(buf, dtype, count=count * width, offset=offset).reshape(
+            -1, width
+        )
+
+    positions = array(new, binary, start + 1, "VEC3", 3)
+    normals = array(new, binary, start + 2, "VEC3", 3)
+    if extra_attrs == 5:
+        colours = array(new, binary, n + 1, "VEC3", 3)
+        if (
+            colours.shape != positions.shape
+            or not np.isfinite(colours).all()
+            or not np.all((0 <= colours) & (colours <= 1))
+        ):
+            raise ValueError("追加面の頂点色が不正です。")
+    old_idx = array(old, original, previous["indices"], "SCALAR", 1).reshape(-1, 3)
+    outer = array(old, original, previous["attributes"]["POSITION"], "VEC3", 3)
+    tolerance = max(1e-6, float(np.ptp(outer, axis=0).max()) * 1e-4)
+    kept = array(new, binary, n, "SCALAR", 1).reshape(-1, 3)
+    added = array(new, binary, start + 3, "SCALAR", 1).reshape(-1, 3)
+    if (
+        not np.isfinite(positions).all()
+        or normals.shape != positions.shape
+        or not np.isfinite(normals).all()
+        or np.any(np.abs(np.linalg.norm(normals, axis=1) - 1) > 0.03)
+        or added.max() >= len(positions)
+        or np.any(positions < outer.min(axis=0) - tolerance)
+        or np.any(positions > outer.max(axis=0) + tolerance)
+        or len(kept) >= len(old_idx)
+    ):
+        raise ValueError("補完した頂点・面が不正です。")
+    i = 0
+    for tri in old_idx:
+        if i < len(kept) and np.array_equal(tri, kept[i]):
+            i += 1
+    if i != len(kept):
+        raise ValueError("元の外面三角形が一致しません。")
+    return {
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "bytes": len(raw),
+        "faces": len(kept) + len(added),
+        "embedded_images": len(new["images"]),
+        "retained_faces": len(kept),
+        "removed_faces": len(old_idx) - len(kept),
+        "new_faces": len(added),
+    }
+
+
+def _finish_hypothesis(stage, out, source, editor):
+    """Stage an opt-in proposal after painting and before atomic publication of settings."""
+    from engine.finish_export import embed_master
+    from engine.sf3d_provider import native_glb
+    from engine.visual_brief import json_sha
+
+    if not isinstance(editor, ShapeEditor) or not re.fullmatch(
+        "[0-9a-f]{64}", editor.implementation_sha256
+    ):
+        raise ValueError("形状補完の実装バージョンが不明です。")
+    meta = _validate_result(stage, files.digest(source))
+    if meta.get("shape_hypothesis") is not None:
+        raise ValueError("補完工程は同じ塗装に繰り返し適用できません。")
+    hist = files.read_json(stage / "generation.json")
+    before = stage / "model.glb"
+    native = native_glb(before)
+    observer = hist["photo_observation"]
+    raw = out / "sf3d-observed-work/appearance/photo-observer/last-message.json"
+    seal = files.read_json(raw.parent.parent / "observation-seal.json")
+    source_sha = files.digest(source)
+    if (
+        source_sha != observer["source_sha256"]
+        or source_sha != meta["input_sha256"]
+        or observer["state"] != "completed"
+        or observer["unseen_surface_observed"] is not False
+        or seal.get("receipt") != observer
+        or seal.get("visual_brief", {}).get("source_sha256") != source_sha
+        or hist["registration"]["foreground_file_sha256"]
+        != meta["artifact_sha256"]["input-processed.png"]
+        or hist["registration"]["mesh_file_sha256"]
+        != meta["artifact_sha256"]["shape-master.glb"]
+        or raw.stat().st_size > 49152
+    ):
+        raise ValueError("形状候補の元写真と観察受付が一致しません。")
+    _checked_hash(raw, observer["output_sha256"])
+    raw_observation = files.read_json(raw)
+    canonical_observation = hashlib.sha256(
+        json.dumps(
+            raw_observation, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
+    _checked_hash(before, meta["glb_sha256"])
+    original = meta["artifact_sha256"]
+    with tempfile.TemporaryDirectory(dir=stage) as temp:
+        candidate = Path(temp) / "candidate.glb"
+        registered = {
+            **hist["registration"],
+            "shape_hypothesis_inputs": {
+                "source_sha256": source_sha,
+                "foreground_sha256": original["input-processed.png"],
+                "geometry_master_sha256": original["shape-master.glb"],
+                "display_model_sha256": native["sha256"],
+                "observer_output_sha256": observer["output_sha256"],
+                "observation_canonical_sha256": canonical_observation,
+                "display_rotation_xyzw": hist["camera"]["display_rotation_xyzw"],
+            },
+        }
+        result = editor.propose(
+            source=source,
+            foreground=stage / "input-processed.png",
+            observation=raw_observation,
+            registration=registered,
+            display_model=before,
+            output=candidate,
+        )
+        if not isinstance(result, dict) or result.get("decision") not in SHAPE_FILES:
+            raise ValueError("形状候補の判定を検証できません。")
+        for name, sha in original.items():
+            _checked_hash(stage / name, sha)
+        _checked_hash(source, source_sha)
+        _checked_hash(raw, observer["output_sha256"])
+        mode = result["decision"]
+        evidence = result.get("evidence", {})
+        dimensions = result.get("inferred_dimensions", {})
+        if (
+            not isinstance(result.get("method"), str)
+            or not result["method"]
+            or not isinstance(result.get("reason"), str)
+            or not isinstance(evidence, dict)
+            or not isinstance(dimensions, dict)
+            or any(
+                not isinstance(k, str)
+                or type(v) not in (int, float)
+                or not math.isfinite(v)
+                or v <= 0
+                for k, v in dimensions.items()
+            )
+        ):
+            raise ValueError("形状補完の根拠または推定寸法が不正です。")
+        candidate_info = None
+        decision_reason = result["reason"]
+        if mode != "unchanged":
+            if not dimensions:
+                raise ValueError("候補の推定寸法がありません。")
+            if candidate.is_symlink() or not candidate.is_file():
+                raise ValueError("補完候補のGLBがありません。")
+            candidate_info = _shape_candidate(before, candidate)
+            qualified = (
+                evidence.get("opening") in {"observed", "plausible"}
+                and evidence.get("visible_closure") is False
+                and evidence.get("painted_cap") is False
+                and evidence.get("negative_controls_passed") is True
+                and evidence.get("source_registered") is True
+                and evidence.get("geometry_supported") is True
+                and bool(dimensions)
+            )
+            prohibited = (
+                evidence.get("visible_closure") is True
+                or evidence.get("painted_cap") is True
+            )
+            if mode == "applied" and not (qualified and editor.allow_primary is True):
+                mode = "alternative"
+            alternative_supported = (
+                evidence.get("opening") in {"observed", "plausible"}
+                and evidence.get("negative_controls_passed") is True
+                and evidence.get("geometry_supported") is True
+                and evidence.get("source_registered") is True
+            )
+            if prohibited or (mode == "alternative" and not alternative_supported):
+                mode = "unchanged"
+                decision_reason = (
+                    "visible closure or paint"
+                    if prohibited
+                    else "insufficient registered evidence for an inferred alternative"
+                )
+            if mode == "applied":
+                os.replace(before, stage / "pre-hypothesis.glb")
+                os.replace(candidate, before)
+                embed_master(before, stage / "editable.gltf")
+            elif mode == "alternative":
+                os.replace(candidate, stage / "shape-alternative.glb")
+                embed_master(
+                    stage / "shape-alternative.glb", stage / "shape-alternative.gltf"
+                )
+    end = candidate_info if mode == "applied" else native
+    _checked_hash(before, end["sha256"])
+    report = {
+        "version": 1,
+        "method": result["method"],
+        "decision": mode,
+        "reason": decision_reason,
+        "evidence": evidence,
+        "inferred_dimensions": dimensions,
+        "dimensions_observed": False,
+        "visual_quality": "needs_review",
+        "source_sha256": source_sha,
+        "foreground_sha256": original["input-processed.png"],
+        "observer_output_sha256": observer["output_sha256"],
+        "observations_sha256": json_sha(seal["visual_brief"]),
+        "observer_request_id": observer["request_id"],
+        "source_camera_sha256": json_sha(hist["registration"]),
+        "implementation_sha256": editor.implementation_sha256,
+        "painted_before": native,
+        "candidate": candidate_info,
+        "delivered": end,
+    }
+    files.atomic_json(stage / "shape-hypothesis.json", report)
+    hist.update(shape_hypothesis=report, display_glb_sha256=end["sha256"])
+    files.atomic_json(stage / "generation.json", hist)
+    names = set(original) | SHAPE_FILES[mode]
+    meta.update(
+        shape_hypothesis={
+            "decision": mode,
+            "report": "shape-hypothesis.json",
+            **(
+                {
+                    "alternative_model": "shape-alternative.glb",
+                    "alternative_editable": "shape-alternative.gltf",
+                }
+                if mode == "alternative"
+                else {"paint_master": "pre-hypothesis.glb"}
+                if mode == "applied"
+                else {}
+            ),
+        },
+        triangles=end["faces"],
+        embedded_images=end["embedded_images"],
+        glb_sha256=end["sha256"],
+        artifact_sha256={n: files.digest(stage / n) for n in sorted(names)},
+    )
+    files.atomic_json(stage / "settings.json", meta)
+    return meta
+
+
+def _publish(stage, out, names, source_sha, *, source=None, shape_editor=None):
+    if shape_editor is _RELEASED_SHAPE_EDITOR:
+        shape_editor = _released_shape_editor()
+    if shape_editor is not None:
+        names = _finish_hypothesis(stage, out, source, shape_editor)["artifact_sha256"]
     _validate_result(stage, source_sha)
     # A held preview is a separate product state. Preserve its previous receipt privately
     # when a later, explicitly resumed run succeeds, including its exact original preview.
@@ -439,7 +801,9 @@ def _publish(stage, out, names, source_sha):
     os.replace(stage / "settings.json", out / "settings.json")
 
 
-def _native_finish(out, source, base, original, reg, observations, observation):
+def _native_finish(
+    out, source, base, original, reg, observations, observation, shape_editor=None
+):
     work = out / "sf3d-observed-work"
     _native_inspection(base, reg, observations, work)
     with tempfile.TemporaryDirectory(dir=out) as tmp:
@@ -478,11 +842,20 @@ def _native_finish(out, source, base, original, reg, observations, observation):
             },
         }
         files.atomic_json(stage / "settings.json", meta)
-        _publish(stage, out, NATIVE_ARTIFACTS, hist["source_sha256"])
-    return meta
+        _publish(
+            stage,
+            out,
+            NATIVE_ARTIFACTS,
+            hist["source_sha256"],
+            source=source,
+            shape_editor=shape_editor,
+        )
+    return files.read_json(out / "settings.json")
 
 
 def _validate_result(out, source_sha):
+    from engine.visual_brief import json_sha
+
     meta = files.read_json(out / "settings.json")
     hashes = meta["artifact_sha256"]
     native = meta.get("appearance_mode") == "native_material"
@@ -494,6 +867,15 @@ def _validate_result(out, source_sha):
     if meta.get("appearance_mode") not in modes:
         raise ValueError("不明な仕上げ方式です。")
     required = modes[meta["appearance_mode"]]
+    hypothesis = meta.get("shape_hypothesis")
+    if hypothesis is not None:
+        if (
+            not isinstance(hypothesis, dict)
+            or hypothesis.get("decision") not in SHAPE_FILES
+            or hypothesis.get("report") != "shape-hypothesis.json"
+        ):
+            raise ValueError("形状補完の判定を照合できません。")
+        required = required | SHAPE_FILES[hypothesis["decision"]]
     if (
         set(hashes) != required
         or meta["pipeline"] != PIPELINE
@@ -506,15 +888,42 @@ def _validate_result(out, source_sha):
     for name in required:
         _checked_hash(out / name, hashes[name])
     gen = files.read_json(out / "generation.json")
+    paint_sha = hashes["model.glb"]
+    if hypothesis is not None:
+        report = files.read_json(out / "shape-hypothesis.json")
+        mode = hypothesis["decision"]
+        paint_sha = (
+            hashes["pre-hypothesis.glb"] if mode == "applied" else hashes["model.glb"]
+        )
+        if (
+            report != gen.get("shape_hypothesis")
+            or report["decision"] != mode
+            or report["painted_before"]["sha256"] != paint_sha
+            or report["delivered"]["sha256"] != meta["glb_sha256"]
+            or meta["triangles"] != report["delivered"]["faces"]
+            or gen["display_glb_sha256"] != meta["glb_sha256"]
+            or report["dimensions_observed"] is not False
+            or report["source_sha256"] != source_sha
+            or report["foreground_sha256"] != hashes["input-processed.png"]
+            or report["source_camera_sha256"] != json_sha(gen["registration"])
+            or report["observer_request_id"] != gen["photo_observation"]["request_id"]
+            or report["observer_output_sha256"]
+            != gen["photo_observation"]["output_sha256"]
+            or mode == "alternative"
+            and report["candidate"]["sha256"] != hashes["shape-alternative.glb"]
+            or mode == "applied"
+            and report["candidate"] != report["delivered"]
+        ):
+            raise ValueError("形状補完の写真・観察・編集前後の成果物が一致しません。")
     if native:
         review = files.read_json(out / "native-material.json")
         if (
             gen["source_sha256"] != source_sha
             or gen["external_image_generations"] != 0
             or review["source_sha256"] != source_sha
-            or review["model_sha256"] != hashes["model.glb"]
+            or review["model_sha256"] != paint_sha
             or review["inspection_sha256"] != hashes["native-inspection.png"]
-            or gen["shape"]["output_sha256"] != hashes["model.glb"]
+            or gen["shape"]["output_sha256"] != paint_sha
             or gen["shape"]["native_sha256"] != hashes["shape-master.glb"]
             or gen["shape"]["camera"] != meta["camera"]
             or review["hold_projection"] is not False
@@ -602,6 +1011,7 @@ def _export(
     observation,
     proposal,
     orientation,
+    shape_editor=None,
 ):
     from engine.finish_export import embed_master
     from engine.sf3d_provider import native_glb
@@ -709,8 +1119,15 @@ def _export(
             "artifact_sha256": {n: files.digest(stage / n) for n in sorted(required)},
         }
         files.atomic_json(stage / "settings.json", meta)
-        _publish(stage, out, required, original["input_sha256"])
-    return meta
+        _publish(
+            stage,
+            out,
+            required,
+            original["input_sha256"],
+            source=source,
+            shape_editor=shape_editor,
+        )
+    return files.read_json(out / "settings.json")
 
 
 HOLD_REASONS = {
@@ -889,7 +1306,15 @@ def _guard_downstream(out, work):
         )
 
 
-def run(source, out, *, setup, progress=None, cancelled=None):
+def run(
+    source,
+    out,
+    *,
+    setup,
+    progress=None,
+    cancelled=None,
+    shape_editor=_RELEASED_SHAPE_EDITOR,
+):
     from engine import guided_shape_job, sf3d_shape_job
     from engine.guided_provider import generate_guided_paint
     from engine.hidden_review import review_hidden_paint
@@ -965,7 +1390,14 @@ def run(source, out, *, setup, progress=None, cancelled=None):
             if mode == "native_material":
                 enter("native_inspection")
                 meta = _native_finish(
-                    out, source, base, orig, reg, observations, observation
+                    out,
+                    source,
+                    base,
+                    orig,
+                    reg,
+                    observations,
+                    observation,
+                    shape_editor,
                 )
                 files.atomic_json(
                     state,
@@ -1042,6 +1474,7 @@ def run(source, out, *, setup, progress=None, cancelled=None):
                 observation,
                 proposal,
                 orientation,
+                shape_editor,
             )
             print("sf3d observed export", flush=True)
             if progress:
