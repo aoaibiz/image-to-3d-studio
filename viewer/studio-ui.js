@@ -25,6 +25,7 @@ app.innerHTML = `
     <figure id="pose-preview" hidden><img width="96" height="96" alt="自動で選んだポーズ"><figcaption>使用したポーズです。別の対象を作るには、その部分を切り抜いて送ってください。</figcaption></figure>
   </div>`;
 document.querySelector('header').after(app);
+const pixalPipeline = 'pixal3d-space-v1';
 const front = document.querySelector('[data-view=front]');
 front.textContent = '+Z 視点';
 const title = document.createElement('h2'); title.className = 'inspection-title'; title.textContent = '3D を確認';
@@ -51,6 +52,9 @@ const terminal = new Set(['needs_review', 'review_hold', 'failed', 'cancelled', 
 const stages = { queued: '順番待ち', starting: '生成の準備中', 'initializing model': 'モデルを準備中', preprocessing: '画像を整えています', 'selecting source': '対象を選んでいます', 'finishing model': '形と塗装を仕上げています', 'resuming finish': '保存した立体から仕上げを再開しています', 'running model': '立体を推定中', 'extracting mesh': '形状を取り出しています', 'baking texture': '表面の色を作成中', inference: '立体を生成中', mesh: '形状を作成中', texture: 'テクスチャを作成中', export: 'GLB を出力中', inspection: '形式を検査中', rendering: '確認画像を作成中', appearance: '入力画像と立体を比較中', needs_review: '確認待ち', failed: '処理に失敗', cancelled: '中止', interrupted: '中断' };
 function message(text) { state.textContent = text; }
 Object.assign(stages, {
+  'pixal connecting': 'Pixal3Dの個人Spaceに接続しています', 'pixal uploaded': '公開CC0写真を送信しました',
+  'pixal generation_waiting': '受け付けた立体生成を待っています', 'pixal downloading': '材質付きGLBを取得しています',
+  'pixal complete': '生成したGLBを受け取りました', 'pixal exporting': '材質と編集用マスターを検査しています',
   'sf3d connecting': 'Stability AI 公式Spaceに接続しています', 'sf3d uploaded': '切り抜きを送信しました',
   'sf3d preprocess_waiting': '公式Spaceで前処理を待っています', 'sf3d preprocessed': '前処理が完了しました',
   'sf3d generation_waiting': '公式Spaceで立体生成を待っています', 'sf3d downloading': '材質付きの立体を取得しています',
@@ -92,9 +96,14 @@ async function readEngine() {
     const observedSF3D = engine.pipeline === 'sf3d-codex-observed-v1' && engine.local === false
       && Array.isArray(engine.recipients) && engine.recipients.length === 2
       && engine.recipients[0] === 'Stability AI / Hugging Face' && engine.recipients[1] === 'OpenAI ChatGPT';
-    if (!local && !guided && !sf3d && !observedSF3D) throw Error('生成方式と送信先を確認できません。');
+    const pixal = engine.pipeline === pixalPipeline && engine.local === false && engine.public_cc0_only === true
+      && engine.recipient === 'Hugging Face user victor / Space victor/pixal3d-studio';
+    if (!local && !guided && !sf3d && !observedSF3D && !pixal) throw Error('生成方式と送信先を確認できません。');
     pipeline = engine.pipeline;
-    if (observedSF3D) {
+    generate.textContent = pixal ? 'このCC0公開写真で3Dを生成' : '3D を生成';
+    if (pixal) {
+      info.textContent = 'Pixal3Dの公開デモ専用です。ボタンを押すと、選んだCC0公開写真をHugging Faceの個人Space victor/pixal3d-studioへ送り、匿名枠で1回生成します。写真と出力の保存期間は未確認です。';
+    } else if (observedSF3D) {
       info.textContent = '評価用のStable Fast 3Dを使用します。切り抜いた写真をHugging Face上のStability AI公式Spaceに送り、匿名枠で立体を1回生成します。OpenAIにはメタデータを除いた元写真を送り、本人のChatGPT利用枠で外観を1回解析します。塗装が必要な場合は写真と立体の確認画像を送り、画像を1回生成します。';
     } else if (sf3d) {
       info.textContent = '評価用の Stable Fast 3D を使用します。切り抜いた写真を Hugging Face 上の Stability AI 公式Spaceに送り、匿名の利用枠で材質付きの立体を生成します。';
@@ -200,9 +209,10 @@ async function loadResult(job) {
     if (!comparison.hidden) comparison.href = '/api/jobs/' + job.id + '/artifacts/' + sheet;
     const resultSG = (settings.pipeline || job.config?.pipeline) === tripoSG;
     const resultSF3D = ['sf3d-official-preview', 'sf3d-codex-observed-v1'].includes(settings.pipeline);
-    front.textContent = resultSF3D ? '推定入力側 +Z' : resultSG ? '+Z 視点' : '入力側 +Z';
+    front.textContent = settings.pipeline === pixalPipeline ? '+Z 視点' : resultSF3D ? '推定入力側 +Z' : resultSG ? '+Z 視点' : '入力側 +Z';
     const selectedPose = !resultSG && settings.source_selection?.detected_count ? `全${settings.source_selection.detected_count}個の候補から上段の中央に近い1個を選びました。` : '';
-    const shapeNote = resultSG
+    const shapeNote = settings.pipeline === pixalPipeline ? 'Pixal3Dで形状と材質を推定しました。写真に隠れた面の形と模様を確認してください。'
+      : resultSG
       ? 'TripoSG が立体の形と向きを推定しました。入力画像に写った側は、立体を回して確認してください。'
       : settings.pipeline === 'sf3d-codex-observed-v1'
         ? ({ native_material: '元のSF3D材質を保持しました。', guided_region: '背面の塗装を推定しました。',
@@ -317,7 +327,7 @@ generate.addEventListener('click', async () => {
   if (!key) { key = crypto.randomUUID(); localStorage.setItem(storageKey, key); }
   message('この端末の Studio に画像を渡しています。');
   try {
-    const { job } = await api('/api/jobs', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Studio-Client': '1', 'X-Studio-Pipeline': expected, 'Idempotency-Key': key }, body: chosen });
+    const { job } = await api('/api/jobs', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Studio-Client': '1', 'X-Studio-Pipeline': expected, 'Idempotency-Key': key, ...(expected === pixalPipeline ? {'X-Studio-CC0-Source': imageHash} : {}) }, body: chosen });
     scrollOnResult = true; watch(job.id);
   } catch (error) {
     if (error.status === 409) {

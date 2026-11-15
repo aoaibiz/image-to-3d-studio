@@ -14,7 +14,7 @@ import sys
 from urllib.parse import urlsplit, parse_qs
 from .core import JobCore, JobError, PipelineConflict, MAX_INPUT, ROOT, TERMINAL
 from engine.pipeline import (GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS,
-                             OBSERVED_PIPELINE, SF3D_OBSERVED_PIPELINE, SF3D_PIPELINES,
+                             OBSERVED_PIPELINE, PIXAL_PIPELINE, PIXAL_RECIPIENT, SPACE_PIPELINES, SF3D_OBSERVED_PIPELINE,
                              SHAPE_PIPELINE, SHAPE_PIPELINES)
 
 STATIC = {
@@ -117,7 +117,10 @@ def shape_doctor(core):
     return result
 
 
-def sf3d_engine_info(pipeline):
+def space_engine_info(pipeline):
+    if pipeline == PIXAL_PIPELINE:
+        return {"pipeline": pipeline, "local": False, "recipient": PIXAL_RECIPIENT, "public_cc0_only": True}
+
     info = {"pipeline": pipeline, "local": False}
     if pipeline == SF3D_OBSERVED_PIPELINE:
         return {**info, "recipients": ["Stability AI / Hugging Face", "OpenAI ChatGPT"]}
@@ -192,21 +195,25 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/engine":
             pipeline = self.server.core.pipeline
-            if pipeline in SF3D_PIPELINES:
-                self.send_json(200, sf3d_engine_info(pipeline))
+            if pipeline in SPACE_PIPELINES:
+                self.send_json(200, space_engine_info(pipeline))
                 return
             self.send_json(200, {"pipeline": pipeline, "local": pipeline not in GUIDED_PIPELINES,
                                  **({"recipient": "OpenAI ChatGPT"} if pipeline in GUIDED_PIPELINES else {})})
             return
         if path == "/api/doctor":
-            if self.server.core.pipeline in SF3D_PIPELINES:
+            if self.server.core.pipeline in SPACE_PIPELINES:
                 checks = {name: (ROOT / path).is_file() for name, path in {
                     "python": ".runtime/venv/Scripts/python.exe", "foreground_model": ".runtime/u2net/u2net.onnx",
                     "validator": ".runtime/validator/gltf_validator.exe", "viewer": "viewer/node_modules/three/build/three.module.js",
                 }.items()}
+                if self.server.core.pipeline == PIXAL_PIPELINE:
+                    checks.pop("foreground_model")
                 checks["node"] = bool(shutil.which("node"))
-                result = {**sf3d_engine_info(self.server.core.pipeline), "ok": all(checks.values()), "checks": checks,
+                result = {**space_engine_info(self.server.core.pipeline), "ok": all(checks.values()), "checks": checks,
                           "diagnostics": {"remote_availability": "未確認。実行時に公式Spaceの混雑・匿名利用枠を確認します。"}}
+                if self.server.core.pipeline == PIXAL_PIPELINE:
+                    result["diagnostics"]["remote_availability"] = "個人Spaceの稼働状況は送信前に確認します。匿名GPUの残り時間は未確認です。"
                 if self.server.core.pipeline == SF3D_OBSERVED_PIPELINE:
                     add_codex_checks(result, observation=True)
                 self.send_json(200, result)
@@ -487,7 +494,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/jobs":
                 job, created = self.server.core.create(
-                    data, self.headers.get("Idempotency-Key"), self.headers.get("X-Studio-Pipeline")
+                    data, self.headers.get("Idempotency-Key"), self.headers.get("X-Studio-Pipeline"),
+                    self.headers.get("X-Studio-CC0-Source")
                 )
                 self.send_json(201 if created else 200, {"job": job})
                 return

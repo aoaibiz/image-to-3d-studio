@@ -21,15 +21,16 @@ try {
       output(await json("/api/doctor"));
       break;
     case "generate": {
-      const [file, key] = args;
-      if (!file || !key) throw Error("generate <image> <stable-request-key>");
+      const [file, key, grant] = args;
+      if (!file || !key || args.length > 3 || (grant && grant !== "--public-cc0-to-pixal"))
+        throw Error("generate <image> <stable-request-key> [--public-cc0-to-pixal]");
       const mime = {
         ".png": "image/png",
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
         ".webp": "image/webp",
       }[extname(file).toLowerCase()];
-      output(await submit(await readFile(file), mime, key));
+      output(await submit(await readFile(file), mime, key, grant === "--public-cc0-to-pixal"));
       break;
     }
     case "status":

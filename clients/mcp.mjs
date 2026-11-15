@@ -26,11 +26,12 @@ register(
   "generate",
   "Submit base64 image bytes with a stable request key. Reusing the key is idempotent.",
   {
+    publicCC0ToPixal: z.literal(true).optional().describe("Attest this particular image is public CC0 and authorize sending it to the third-party Hugging Face Space victor/pixal3d-studio. Requires the Pixal demo configuration."),
     imageBase64: z.string(),
     mime: z.enum(["image/png", "image/jpeg", "image/webp"]),
     requestKey: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/),
   },
-  ({ imageBase64, mime, requestKey }) => {
+  ({ imageBase64, mime, requestKey, publicCC0ToPixal }) => {
     if (imageBase64.length > Math.ceil((20 * 1024 * 1024) / 3) * 4)
       throw Error("画像は20MB以下で選び直してください。");
     const bytes = Buffer.from(imageBase64, "base64");
@@ -40,7 +41,7 @@ register(
       bytes.toString("base64") !== imageBase64
     )
       throw Error("画像のBase64形式を確認してください。");
-    return submit(bytes, mime, requestKey);
+    return submit(bytes, mime, requestKey, publicCC0ToPixal);
   },
 );
 register("status", "Read job status.", { jobId: id }, ({ jobId }) =>

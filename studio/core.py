@@ -5,7 +5,7 @@ from pathlib import Path
 from .process_group import ProcessGroup
 from .configure import read_pipeline
 from engine.pipeline import (GUIDED_PIPELINES, HOST_PIPELINE, LEGACY_PIPELINE, OBSERVED_PIPELINE,
-                             PIPELINE, SF3D_OBSERVED_PIPELINE, SF3D_PIPELINE, SF3D_PIPELINES,
+                             PIPELINE, PIXAL_PIPELINE, SPACE_PIPELINES, SF3D_OBSERVED_PIPELINE, SF3D_PIPELINE,
                              SHAPE_PIPELINE, SHAPE_PIPELINES)
 import queue
 import re
@@ -108,6 +108,9 @@ def _hypothesis_files(out, settings, source_sha, validate):
 SHAPE_ERRORS = {
     "sf3d_observed_review": "材質または塗装の向きを確認できず、仕上げを保留しました。同じジョブに保存した検品記録を確認してください。",
     "sf3d_observed_error": "生成を中断しました。SF3Dの利用枠、Codexのログインと元の受付を確認し、同じジョブを再開してください。",
+    "pixal_consent": "この公開CC0写真の送信同意と、Pixal3D用の初回設定を確認してください。",
+    "pixal_pending": "個人Spaceの応答待ちです。元のジョブを再開して受付済みの結果を確認してください。",
+    "pixal_error": "Pixal3Dの利用枠、元の受付と材質付きGLBの検査結果を確認してください。生成の自動再送はありません。",
     "sf3d_consent": "公式Spaceへの送信と匿名利用枠の使用設定を確認し、同じジョブを再開してください。",
     "sf3d_pending": "公式Spaceの受付は保存されています。同じジョブを再開して結果を確認してください。",
     "sf3d_error": "SF3Dの前景切り抜き・公式Spaceの利用枠・保存した成果物を確認してください。受け付けた生成は再送しません。",
@@ -280,7 +283,7 @@ class JobCore:
                 names.extend(sorted(GUIDED_OUTPUTS))
             if job["config"].get("pipeline") in SHAPE_PIPELINES:
                 names.extend(["shape-master.glb", "appearance.json", "generation.json"])
-            if job["config"].get("pipeline") == SF3D_PIPELINE:
+            if job["config"].get("pipeline") in (SF3D_PIPELINE, PIXAL_PIPELINE):
                 names.extend(["provider-native.glb", "generation.json"])
             if job["config"].get("pipeline") == SF3D_OBSERVED_PIPELINE and job["status"] == "needs_review":
                 candidates = {"shape-master.glb", "generation.json", "finished-native.glb",
@@ -503,7 +506,7 @@ class JobCore:
                 self.checking.discard(job_id)
                 self.changed.notify_all()
 
-    def create(self, data, idem, expected_pipeline=None):
+    def create(self, data, idem, expected_pipeline=None, public_cc0_sha=None):
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", idem or ""):
             raise JobError(
                 "Idempotency-Key を指定してください。英数字など128文字以内です。"
@@ -526,7 +529,10 @@ class JobCore:
                 if expected_pipeline is not None and job["config"].get("pipeline") != expected_pipeline:
                     raise PipelineConflict("このキーは別の生成方式のジョブで使用済みです。")
                 return job, False
-            if self.pipeline == SF3D_OBSERVED_PIPELINE:
+            if self.pipeline == PIXAL_PIPELINE:
+                if expected_pipeline != PIXAL_PIPELINE or public_cc0_sha != digest:
+                    raise PipelineConflict("このCC0公開写真を個人Spaceへ送る同意を、写真ごとに指定してください。")
+            if self.pipeline in (SF3D_OBSERVED_PIPELINE, PIXAL_PIPELINE):
                 try:
                     current = read_pipeline(self.directory)
                 except (OSError, ValueError) as exc:
@@ -552,7 +558,8 @@ class JobCore:
                     stamp,
                     json.dumps(
                         {
-                            **({} if self.pipeline in SF3D_PIPELINES else {
+                            **({"public_cc0_sha256": digest} if self.pipeline == PIXAL_PIPELINE else {}),
+                            **({} if self.pipeline in SPACE_PIPELINES else {
                                 "resolution": 256 if self.pipeline in SHAPE_PIPELINES else 96, "texture_size": 1024,
                             }),
                             "auto_finish": True,
@@ -776,6 +783,8 @@ class JobCore:
                 "selecting source",
                 "resuming finish",
                 "finishing model",
+                "pixal connecting", "pixal uploaded", "pixal generation_waiting",
+                "pixal downloading", "pixal complete", "pixal exporting",
                 "sf3d connecting", "sf3d uploaded", "sf3d preprocess_waiting", "sf3d preprocessed",
                 "sf3d generation_waiting", "sf3d downloading", "sf3d complete", "sf3d exporting",
                 "sf3d observed native", "sf3d observed native_inspection", "sf3d observed observation", "sf3d observed registration",
@@ -815,6 +824,9 @@ class JobCore:
 
     @staticmethod
     def _artifacts_valid(out, settings):
+        if settings.get("pipeline") == PIXAL_PIPELINE:
+            from engine.pixal_shape_job import valid
+            return valid(out, settings)
         if settings.get("pipeline") == SF3D_OBSERVED_PIPELINE:
             from engine.sf3d_observed_job import valid
             return valid(out, settings)
@@ -884,7 +896,8 @@ class JobCore:
         glb = out / "model.glb"
         settings_path = out / "settings.json"
         config = self.get(job_id)["config"]
-        sf3d = config.get("pipeline") in SF3D_PIPELINES
+        remote_space = config.get("pipeline") in SPACE_PIPELINES
+        pixal = config.get("pipeline") == PIXAL_PIPELINE
         shape = config.get("pipeline") in SHAPE_PIPELINES
         guided = config.get("pipeline") in GUIDED_PIPELINES
         if (
@@ -900,7 +913,7 @@ class JobCore:
                 previous["input_sha256"] == self.get(job_id)["input_sha256"]
                 and previous["glb_sha256"]
                 == hashlib.sha256(glb.read_bytes()).hexdigest()
-                and (sf3d or (previous["marching_cubes_resolution"] == config["resolution"]
+                and (remote_space or (previous["marching_cubes_resolution"] == config["resolution"]
                               and previous["texture_size"] == config["texture_size"]))
                 and (
                     not config.get("auto_finish")
@@ -926,7 +939,7 @@ class JobCore:
                 config.get("auto_finish")
                 and isinstance(previous, dict)
                 and previous.get("auto_finish_complete") is True
-                and not shape and not sf3d
+                and not shape and not remote_space
                 and not (out / "raw-export" / "finish-checkpoint.json").is_file()
             ):
                 raise RuntimeError(
@@ -945,11 +958,16 @@ class JobCore:
                 if not checkpoint:
                     raise JobError("成果物と形状の再開用データを照合できません。ジョブのバックアップを確認してください。")
             # Only clear files inside this job's own output directory.
-            if not shape and not sf3d:
+            if not shape and not remote_space:
                 for p in out.iterdir():
                     if p.is_file():
                         p.unlink()
-            if sf3d:
+            if pixal:
+                if config.get("public_cc0_sha256") != self.get(job_id)["input_sha256"]:
+                    raise JobError(SHAPE_ERRORS["pixal_consent"])
+                command = [py, "-u", "-m", "engine.pixal_shape_job", "--setup", str(self.directory / "engine.json"),
+                           "--public-cc0-sha256", config["public_cc0_sha256"]]
+            elif remote_space:
                 module = "engine.sf3d_observed_job" if config["pipeline"] == SF3D_OBSERVED_PIPELINE else "engine.sf3d_shape_job"
                 command = [py, "-u", "-m", module, "--setup", str(self.directory / "engine.json")]
             elif guided:
@@ -961,9 +979,9 @@ class JobCore:
             else:
                 command = [py, str(self.root / "engine" / "infer.py")]
             command.extend([str(folder / "input.image"), str(out)])
-            if not sf3d:
+            if not remote_space:
                 command.extend(["--resolution", str(config["resolution"]), "--texture-size", str(config["texture_size"])])
-            if not shape and not sf3d:
+            if not shape and not remote_space:
                 command.extend(["--pipeline", config.get("pipeline", LEGACY_PIPELINE)])
             self._command(job_id, command, "starting")
         digest = hashlib.sha256(glb.read_bytes()).hexdigest()
@@ -971,7 +989,7 @@ class JobCore:
         if (
             settings["glb_sha256"] != digest
             or settings["input_sha256"] != self.get(job_id)["input_sha256"]
-            or (not sf3d and (settings["marching_cubes_resolution"] != config["resolution"]
+            or (not remote_space and (settings["marching_cubes_resolution"] != config["resolution"]
                               or settings["texture_size"] != config["texture_size"]))
             or (
                 config.get("auto_finish")
@@ -1027,10 +1045,10 @@ class JobCore:
             or not all((out / name).is_file() for name in manifest["files"])
         ):
             raise RuntimeError("proof hash mismatch")
-        if config.get("pipeline") in (PIPELINE, *SF3D_PIPELINES, *SHAPE_PIPELINES):
+        if config.get("pipeline") in (PIPELINE, *SPACE_PIPELINES, *SHAPE_PIPELINES):
             source = None
             raw = settings.get("raw_export", "")
-            if sf3d:
+            if remote_space:
                 source = out / "input-processed.png"
                 inspection["source_registration"] = {**settings["camera"], "status": "needs_review"}
             elif shape:
@@ -1055,7 +1073,7 @@ class JobCore:
                             str(source),
                             str(out),
                             digest,
-                            *(["--observed-view", "front"] if shape or sf3d else []),
+                            *(["--observed-view", "front"] if shape or (remote_space and not pixal) else []),
                         ],
                         "appearance",
                     )

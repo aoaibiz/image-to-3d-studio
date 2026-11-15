@@ -55,7 +55,7 @@ export async function submitPaint(id, claim, requestSha, toolCall, png) {
     "X-Studio-Paint-Sha256": createHash("sha256").update(png).digest("hex"),
   }, body: png });
 }
-export function submit(bytes, mime, key) {
+export function submit(bytes, mime, key, publicCC0ToPixal = false) {
   if (!["image/png", "image/jpeg", "image/webp"].includes(mime))
     throw Error("Image must be PNG, JPEG, or WebP");
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key || ""))
@@ -64,7 +64,12 @@ export function submit(bytes, mime, key) {
     );
   return json("/api/jobs", {
     method: "POST",
-    headers: { "Content-Type": mime, "Idempotency-Key": key },
+    headers: { "Content-Type": mime, "Idempotency-Key": key,
+      ...(publicCC0ToPixal === true ? {
+        "X-Studio-Pipeline": "pixal3d-space-v1",
+        "X-Studio-CC0-Source": createHash("sha256").update(bytes).digest("hex"),
+      } : {}),
+    },
     body: bytes,
   });
 }
