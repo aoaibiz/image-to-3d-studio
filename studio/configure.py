@@ -8,12 +8,12 @@ from pathlib import Path
 
 from engine.pipeline import (GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVED_AGREEMENT,
                              OBSERVED_PIPELINE, OBSERVED_PIPELINES, PIPELINE, PIXAL_AGREEMENT, PIXAL_PIPELINE, SPACE_PIPELINES, SF3D_AGREEMENT,
-                             SF3D_OBSERVED_PIPELINE, SF3D_PIPELINE, SF3D_PIPELINES, SHAPE_PIPELINE)
+                             SF3D_OBSERVED_PIPELINE, SF3D_PIPELINE, SF3D_PIPELINES, SG_CHART_PIPELINE, SHAPE_PIPELINE)
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINES = {"pixal3d-space": PIXAL_PIPELINE, SF3D_PIPELINE: SF3D_PIPELINE, "triposr": PIPELINE, "triposg": SHAPE_PIPELINE, "triposg-guided": GUIDED_PIPELINE,
            "triposg-guided-host": HOST_PIPELINE, "triposg-observed": OBSERVED_PIPELINE,
-           "sf3d-observed": SF3D_OBSERVED_PIPELINE}
+           "sf3d-observed": SF3D_OBSERVED_PIPELINE, "triposg-chart": SG_CHART_PIPELINE}
 
 
 def legacy_sf3d_observed_agreement():
@@ -24,6 +24,11 @@ def legacy_sf3d_observed_agreement():
 def agreement(pipeline):
     if pipeline == PIXAL_PIPELINE:
         return PIXAL_AGREEMENT
+    if pipeline == SG_CHART_PIPELINE:
+        return {**OBSERVED_AGREEMENT, "schema": 2,
+                "send": [OBSERVED_AGREEMENT["send"][0],
+                         "normalized source photo and one source-anchored continuous surface chart for inferred paint"],
+                "paint_guide_recipes": ["source-anchored-surface-chart"]}
     if pipeline == SF3D_OBSERVED_PIPELINE:
         appearance = {**OBSERVED_AGREEMENT,
                       "send": [OBSERVED_AGREEMENT["send"][0],
@@ -58,7 +63,7 @@ def read_pipeline(directory):
         raise ValueError(
             "生成設定が無効です。studio.configure でローカルエンジンを設定し直してください。"
         )
-    if doc["pipeline"] in SPACE_PIPELINES:
+    if doc["pipeline"] in SPACE_PIPELINES or doc["pipeline"] == SG_CHART_PIPELINE:
         if not valid_agreement(doc, doc["pipeline"]):
             raise ValueError("選択した方式の送信先と利用枠を初回設定で確認してください。")
     if doc["pipeline"] in GUIDED_PIPELINES:

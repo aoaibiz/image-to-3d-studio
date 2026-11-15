@@ -14,7 +14,7 @@ import sys
 from urllib.parse import urlsplit, parse_qs
 from .core import JobCore, JobError, PipelineConflict, MAX_INPUT, ROOT, TERMINAL
 from engine.pipeline import (GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS,
-                             OBSERVED_PIPELINE, PIXAL_PIPELINE, PIXAL_RECIPIENT, SPACE_PIPELINES, SF3D_OBSERVED_PIPELINE,
+                             OBSERVED_PIPELINE, PIXAL_PIPELINE, PIXAL_RECIPIENT, SPACE_PIPELINES, SF3D_OBSERVED_PIPELINE, SG_CHART_PIPELINE,
                              SHAPE_PIPELINE, SHAPE_PIPELINES)
 
 STATIC = {
@@ -241,9 +241,9 @@ class Handler(BaseHTTPRequestHandler):
                     result.update(pipeline=HOST_PIPELINE, local=False, recipient="OpenAI ChatGPT")
                     result["diagnostics"]["guided_paint"] = {"provider": "Codex host / OpenAI ImageGen",
                                                              "host_image_tool": "unverified until a connected host returns a generated image"}
-                if self.server.core.pipeline in (GUIDED_PIPELINE, OBSERVED_PIPELINE):
+                if self.server.core.pipeline in (GUIDED_PIPELINE, OBSERVED_PIPELINE, SG_CHART_PIPELINE):
                     result.update(pipeline=self.server.core.pipeline, local=False, recipient="OpenAI ChatGPT")
-                    add_codex_checks(result, observation=self.server.core.pipeline == OBSERVED_PIPELINE)
+                    add_codex_checks(result, observation=self.server.core.pipeline in (OBSERVED_PIPELINE, SG_CHART_PIPELINE))
                 self.send_json(200, result)
                 return
             checks = {

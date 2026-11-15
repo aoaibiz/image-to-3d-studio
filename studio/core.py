@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from .process_group import ProcessGroup
 from .configure import read_pipeline
-from engine.pipeline import (GUIDED_PIPELINES, HOST_PIPELINE, LEGACY_PIPELINE, OBSERVED_PIPELINE,
+from engine.pipeline import (GUIDED_PIPELINES, HOST_PIPELINE, LEGACY_PIPELINE, OBSERVED_PIPELINE, SG_CHART_PIPELINE,
                              PIPELINE, PIXAL_PIPELINE, SPACE_PIPELINES, SF3D_OBSERVED_PIPELINE, SF3D_PIPELINE,
                              SHAPE_PIPELINE, SHAPE_PIPELINES)
 import queue
@@ -833,6 +833,9 @@ class JobCore:
         if settings.get("pipeline") == PIXAL_PIPELINE:
             from engine.pixal_shape_job import valid
             return valid(out, settings)
+        if settings.get("pipeline") == SG_CHART_PIPELINE:
+            from engine.guided_shape_job import valid_chart
+            return valid_chart(out, settings)
         if settings.get("pipeline") == SF3D_OBSERVED_PIPELINE:
             from engine.sf3d_observed_job import valid
             return valid(out, settings)
@@ -978,7 +981,7 @@ class JobCore:
                 command = [py, "-u", "-m", module, "--setup", str(self.directory / "engine.json")]
             elif guided:
                 command = [py, "-u", "-m", "engine.guided_shape_job", "--setup", str(self.directory / "engine.json")]
-                if config.get("pipeline") in (HOST_PIPELINE, OBSERVED_PIPELINE):
+                if config.get("pipeline") in (HOST_PIPELINE, OBSERVED_PIPELINE, SG_CHART_PIPELINE):
                     command.extend(["--pipeline", config["pipeline"]])
             elif shape:
                 command = [py, "-u", "-m", "engine.local_shape_job"]
@@ -1010,6 +1013,10 @@ class JobCore:
         if config.get("auto_finish"):
             if not self._artifacts_valid(out, settings):
                 raise RuntimeError("artifact hash mismatch")
+        if config.get("pipeline") == SG_CHART_PIPELINE and settings.get("chart_decision") == "diagnostic_source_model":
+            from .chart_results import publish_chart_hold
+            publish_chart_hold(out, settings, self.get(job_id)["input_sha256"])
+            raise ReviewHold()
         validator = self.root / ".runtime" / "validator" / "gltf_validator.exe"
         cmd = [py, str(self.root / "quality" / "inspection.py"), str(glb)]
         from quality.measured_regions import measured_profile

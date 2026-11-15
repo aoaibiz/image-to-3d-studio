@@ -1,4 +1,7 @@
-param([string]$CachedWeights = '', [switch]$TripoSG, [switch]$SendPhotoAndGuidesToOpenAI, [switch]$UseCodexHost, [switch]$ChatGPTPhotoAnalysis, [switch]$AllowOfficialSpace)
+param([string]$CachedWeights = '', [switch]$TripoSG, [switch]$SendPhotoAndGuidesToOpenAI, [switch]$UseCodexHost, [switch]$ChatGPTPhotoAnalysis, [switch]$AllowOfficialSpace, [switch]$SourceSurfaceChart)
+if ($SourceSurfaceChart -and (!$ChatGPTPhotoAnalysis -or !$SendPhotoAndGuidesToOpenAI -or $AllowOfficialSpace -or $UseCodexHost)) {
+  throw 'For local TripoSG with a surface chart, enable -ChatGPTPhotoAnalysis -SendPhotoAndGuidesToOpenAI -SourceSurfaceChart together.'
+}
 if ($AllowOfficialSpace -and ($TripoSG -or $UseCodexHost -or ([bool]$SendPhotoAndGuidesToOpenAI -ne [bool]$ChatGPTPhotoAnalysis))) {
   throw 'For SF3D with ChatGPT analysis and paint, use -AllowOfficialSpace -ChatGPTPhotoAnalysis -SendPhotoAndGuidesToOpenAI together.'
 }
@@ -13,7 +16,14 @@ if ($UseCodexHost -and !$SendPhotoAndGuidesToOpenAI) {
 }
 if ($SendPhotoAndGuidesToOpenAI) {
   if (!$AllowOfficialSpace) { $TripoSG = $true }
-  Write-Host 'Guided paint sends a photo and two rendered views to OpenAI using your ChatGPT plan. Check your remaining allowance and credit settings before enabling it. This preview cannot measure account charges.'
+  if ($SourceSurfaceChart) {
+    Write-Host 'Local TripoSG may send a photo and one source-anchored continuous surface chart to OpenAI for one paint request using your ChatGPT plan.'
+  } elseif ($AllowOfficialSpace) {
+    Write-Host 'Paint may send a photo and either two rendered geometry views or one source-anchored continuous surface chart to OpenAI for one paint request using your ChatGPT plan.'
+  } else {
+    Write-Host 'Guided paint sends a photo and two rendered views to OpenAI using your ChatGPT plan.'
+  }
+  Write-Host 'Check your remaining allowance and credit settings before enabling it. This preview cannot measure account charges.'
   if ($ChatGPTPhotoAnalysis) { Write-Host 'Photo analysis also sends one metadata-stripped photo to OpenAI for a text observation. Each job permits one observation and one ImageGen request.' }
 }
 $savedEnv = @{}
@@ -63,7 +73,9 @@ if ($TripoSG) {
   }
   & (Join-Path $PSScriptRoot 'engine\setup-triposg.ps1') @shapeOptions
   $engineOptions = @('--engine', 'triposg')
-  if ($ChatGPTPhotoAnalysis) {
+  if ($SourceSurfaceChart) {
+    $engineOptions = @('--engine', 'triposg-chart', '--chatgpt-photo-analysis', '--allow-send-to-openai')
+  } elseif ($ChatGPTPhotoAnalysis) {
     $engineOptions = @('--engine', 'triposg-observed', '--chatgpt-photo-analysis', '--allow-send-to-openai')
   } elseif ($SendPhotoAndGuidesToOpenAI) {
     $visionRoot = & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -c 'from engine.guided_shape_job import vision_runtime_path; print(vision_runtime_path())'
