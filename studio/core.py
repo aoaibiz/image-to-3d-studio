@@ -17,7 +17,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
-TERMINAL = {"needs_review", "failed", "cancelled", "interrupted"}
+TERMINAL = {"needs_review", "review_hold", "failed", "cancelled", "interrupted"}
 MAX_INPUT = 20 * 1024 * 1024
 PYTHON = ROOT / ".runtime" / "venv" / "Scripts" / "python.exe"
 
@@ -35,6 +35,10 @@ class PipelineConflict(JobError):
 
 
 class AwaitingHostImage(Exception):
+    pass
+
+
+class ReviewHold(Exception):
     pass
 
 
@@ -246,6 +250,11 @@ class JobCore:
                 if job["status"] == "needs_review" and (folder / name).is_file()
             ]
             job["review"] = None
+            if job["status"] == "review_hold" and job["config"].get("pipeline") == SF3D_OBSERVED_PIPELINE:
+                from .review_hold import read_hold
+                diagnostic = read_hold(folder, job["input_sha256"])
+                if diagnostic:
+                    job["hold"], job["artifacts"] = diagnostic
             if "review.json" in job["artifacts"]:
                 try:
                     review = json.loads(
@@ -604,6 +613,10 @@ class JobCore:
                 with self.lock:
                     if self.get(job_id)["status"] == "running":
                         self._update(job_id, "awaiting_host_image", "awaiting_host_image")
+            except ReviewHold:
+                with self.lock:
+                    if self.get(job_id)["status"] == "running":
+                        self._update(job_id, "review_hold", "review_hold", "推定塗装保留・未合格")
             except Exception as exc:
                 with self.lock:
                     if self.get(job_id)["status"] == "running":
@@ -688,7 +701,7 @@ class JobCore:
                 "finishing model",
                 "sf3d connecting", "sf3d uploaded", "sf3d preprocess_waiting", "sf3d preprocessed",
                 "sf3d generation_waiting", "sf3d downloading", "sf3d complete", "sf3d exporting",
-                "sf3d observed native", "sf3d observed native_inspection", "sf3d observed observation",
+                "sf3d observed native", "sf3d observed native_inspection", "sf3d observed observation", "sf3d observed registration",
                 "sf3d observed guides", "sf3d observed paint", "sf3d observed orientation",
                 "sf3d observed projection", "sf3d observed export",
                 "segmenting source",
@@ -716,6 +729,9 @@ class JobCore:
             if code == 72 and stage == "starting" and self.get(job_id)["config"].get("pipeline") == HOST_PIPELINE:
                 raise AwaitingHostImage()
             if failure:
+                if (failure == SHAPE_ERRORS["sf3d_observed_review"]
+                        and self.get(job_id)["config"].get("pipeline") == SF3D_OBSERVED_PIPELINE):
+                    raise ReviewHold()
                 raise JobError(failure)
             raise RuntimeError("command failed")
         return "".join(lines)

@@ -17,6 +17,7 @@ app.innerHTML = `
     <div class="actions"><button class="primary" id="generate" disabled>3D を生成</button><button id="cancel" hidden>処理を中止</button><button id="resume" hidden>処理を再開</button></div>
     <div id="job-state" role="status" aria-live="polite"><p>画像を選んでください。</p></div>
     <a id="appearance-sheet" target="_blank" rel="noopener" hidden>入力画像と立体の形・色を見比べる</a>
+    <a id="held-sheet" target="_blank" rel="noopener" hidden>元の立体の検品画像を開く</a>
     <figure id="pose-preview" hidden><img width="96" height="96" alt="自動で選んだポーズ"><figcaption>使用したポーズです。別の対象を作るには、その部分を切り抜いて送ってください。</figcaption></figure>
   </div>`;
 document.querySelector('header').after(app);
@@ -37,7 +38,8 @@ const tripoSG = 'triposg-local-v1';
 const guidedSG = 'triposg-codex-guided-v1';
 let pipeline = null;
 let file = null, imageHash = '', jobId = '', stream = null, loadingJob = '', busy = false, jobActive = false, choice = 0, scrollOnResult = false;
-const terminal = new Set(['needs_review', 'failed', 'cancelled', 'interrupted']);
+let heldInput = '', heldDisplay = '';
+const terminal = new Set(['needs_review', 'review_hold', 'failed', 'cancelled', 'interrupted']);
 const stages = { queued: '順番待ち', starting: '生成の準備中', 'initializing model': 'モデルを準備中', preprocessing: '画像を整えています', 'selecting source': '対象を選んでいます', 'finishing model': '形と塗装を仕上げています', 'resuming finish': '保存した立体から仕上げを再開しています', 'running model': '立体を推定中', 'extracting mesh': '形状を取り出しています', 'baking texture': '表面の色を作成中', inference: '立体を生成中', mesh: '形状を作成中', texture: 'テクスチャを作成中', export: 'GLB を出力中', inspection: '形式を検査中', rendering: '確認画像を作成中', appearance: '入力画像と立体を比較中', needs_review: '確認待ち', failed: '処理に失敗', cancelled: '中止', interrupted: '中断' };
 function message(text) { state.textContent = text; }
 Object.assign(stages, {
@@ -48,6 +50,7 @@ Object.assign(stages, {
   'segmenting source': '背景から被写体を切り出しています',
   'sf3d observed native': 'SF3Dで材質付きの立体を生成しています',
   'sf3d observed observation': 'ChatGPTで写真の色、模様、部品を確認しています',
+  'sf3d observed registration': '写真の輪郭と立体の向きを合わせています',
   'sf3d observed native_inspection': '形状と材質を正面・背面から確認しています',
   'sf3d observed guides': '形状に合わせて背面の塗装用画像を準備しています',
   'sf3d observed paint': 'OpenAIで写真に写っていない面の塗装を推定しています',
@@ -69,7 +72,7 @@ function idKey(hash, engine) {
   return 'image3d:' + (engine === tripoSR ? 'finish-v2' : engine) + ':input:' + hash;
 }
 function updateGenerate() {
-  generate.disabled = !pipeline || !file || busy || jobActive;
+  generate.disabled = !pipeline || !file || busy || jobActive || heldInput === pipeline + ':' + imageHash;
 }
 async function readEngine() {
   const info = document.querySelector('#engine-info');
@@ -183,10 +186,58 @@ async function loadResult(job) {
   } catch (error) { if (jobId === job.id) message(`結果を表示できません: ${error.message}`); }
   finally { if (loadingJob === job.id) loadingJob = ''; }
 }
+async function loadHeld(job) {
+  const hold = job.hold;
+  title.textContent = '推定塗装保留・未合格';
+  document.querySelector('#pose-preview').hidden = true;
+  const picture = document.querySelector('#held-sheet');
+  picture.hidden = !job.artifacts.includes('review-native.png');
+  if (!picture.hidden) picture.href = '/api/jobs/' + job.id + '/artifacts/review-native.png';
+  heldInput = job.config.pipeline + ':' + job.input_sha256;
+  updateGenerate();
+  if (!hold || !job.artifacts.includes('review-native.glb')) {
+    document.body.classList.add('hold-no-preview');
+    message('推定塗装保留・未合格。元の立体を検品記録と照合できませんでした。');
+    return;
+  }
+  message(hold.reason + ' 推定塗装は保留です。確認用に元の立体を表示します。');
+  if (heldDisplay === job.id || loadingJob === job.id) return;
+  loadingJob = job.id;
+  document.body.classList.add('hold-no-preview');
+  try {
+    const response = await fetch('/api/jobs/' + job.id + '/artifacts/review-native.glb');
+    if (!response.ok) throw Error();
+    const bytes = await response.arrayBuffer();
+    if (jobId !== job.id) return;
+    const sha = await window.openViewerFile(new File([bytes], 'review-native.glb', { type: 'model/gltf-binary' }));
+    if (jobId !== job.id) return;
+    if (sha !== hold.preview_sha256) throw Error();
+    heldDisplay = job.id;
+    document.querySelector('#download').textContent = '検品用の元モデルを保存';
+    document.body.classList.remove('hold-no-preview');
+    if (scrollOnResult) { scrollOnResult = false; title.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  } catch {
+    if (jobId === job.id) message('推定塗装保留・未合格。元の立体を読み込めませんでした。');
+  } finally {
+    if (loadingJob === job.id) loadingJob = '';
+  }
+}
 async function refresh(id) {
   const { job } = await api(`/api/jobs/${id}`);
   if (id !== jobId) return;
   showControls(job);
+  document.body.classList.toggle('review-held', job.status === 'review_hold');
+  if (job.status !== 'review_hold') {
+    document.querySelector('#held-sheet').hidden = true;
+    if (heldInput) {
+      heldDisplay = ''; heldInput = '';
+      document.body.classList.toggle('hold-no-preview', job.status !== 'needs_review');
+      title.textContent = '3D を確認';
+      document.querySelector('#download').textContent = '元の GLB を保存';
+      updateGenerate();
+    }
+    if (job.status === 'needs_review') document.body.classList.remove('hold-no-preview');
+  }
   if (job.status !== 'needs_review') document.querySelector('#appearance-sheet').hidden = true;
   const savedStep = job.status === 'running' && /^shape step (\d+)\/(\d+)$/.exec(job.stage);
   const memoryWait = /^waiting for memory (\d+\.\d{2})\/(\d+\.\d{2})$/.exec(job.stage);
@@ -199,6 +250,7 @@ async function refresh(id) {
     ? `（${progress.step}/${progress.total} ステップ）` : '';
   message(`${label}${steps}（ジョブ ${job.id}）${job.error ? ' — ' + job.error : ''}`);
   if (job.status === 'needs_review') await loadResult(job);
+  if (job.status === 'review_hold') await loadHeld(job);
   if (terminal.has(job.status)) { stream?.close(); stream = null; }
 }
 function watch(id) {
@@ -236,6 +288,6 @@ async function action(name) {
 }
 cancel.addEventListener('click', () => action('cancel'));
 resume.addEventListener('click', () => action('resume'));
-const previous = localStorage.getItem(lastKey);
+const previous = new URLSearchParams(location.search).get('job') || localStorage.getItem(lastKey);
 readEngine();
 if (previous && /^[0-9a-f-]{36}$/.test(previous)) watch(previous);

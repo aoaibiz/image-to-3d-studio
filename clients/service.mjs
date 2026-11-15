@@ -96,7 +96,7 @@ export async function watch(id, onEvent = () => {}, signal) {
       if (done) {
         const current = await json(jobPath(id));
         if (
-          ["needs_review", "failed", "cancelled", "interrupted", "awaiting_host_image"].includes(
+          ["needs_review", "review_hold", "failed", "cancelled", "interrupted", "awaiting_host_image"].includes(
             current.job?.status,
           )
         )

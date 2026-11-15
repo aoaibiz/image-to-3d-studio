@@ -51,20 +51,21 @@ try {
     case "resume":
       output(await json(jobPath(args[0]) + "/" + command, { method: "POST" }));
       break;
-    case "show":
-      console.log(BASE + artifactPath(args[0], "offline-preview.html"));
+    case "show": {
+      const { job } = await json(jobPath(args[0]));
+      console.log(job.status === "review_hold" ? BASE + "/?job=" + job.id : BASE + artifactPath(args[0], "offline-preview.html"));
       break;
-    case "inspect":
-      output(
-        args[1]
-          ? await sendJson(jobPath(args[0]) + "/inspect", {
-              profile: profileSchema.parse(
-                JSON.parse(await readFile(args[1], "utf8")),
-              ),
-            })
-          : await json(artifactPath(args[0], "inspection.json")),
-      );
+    }
+    case "inspect": {
+      if (args[1]) {
+        const profile = profileSchema.parse(JSON.parse(await readFile(args[1], "utf8")));
+        output(await sendJson(jobPath(args[0]) + "/inspect", { profile }));
+      } else {
+        const { job } = await json(jobPath(args[0]));
+        output(await json(artifactPath(args[0], job.status === "review_hold" ? "review-hold.json" : "inspection.json")));
+      }
       break;
+    }
     case "review":
       if (!args[1]) throw Error("review <job-id> <review-json>");
       output(

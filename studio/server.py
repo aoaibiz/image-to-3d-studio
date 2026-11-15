@@ -1,6 +1,7 @@
 """Loopback-only HTTP transport for the studio job core."""
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import os
@@ -382,6 +383,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(404, {"error": "成果物がありません。"})
                     return
                 file = self.server.core.directory / job_id / "output" / filename
+                if job["status"] == "review_hold":
+                    hold = job["hold"]
+                    if filename == "review-hold.json":
+                        self.send_json(200, hold)
+                        return
+                    expected = hold["preview_sha256"] if filename == "review-native.glb" else hold["image_sha256"]
+                    with file.open("rb") as stream:
+                        data = stream.read((49 << 20) + 1)
+                    if len(data) > (49 << 20) or hashlib.sha256(data).hexdigest() != expected:
+                        self.send_json(404, {"error": "検品用データの照合に失敗しました。"})
+                        return
+                    self.send_bytes(200, data, "model/gltf-binary" if filename.endswith(".glb") else "image/png")
+                    return
                 self.send_bytes(
                     200,
                     file.read_bytes(),
