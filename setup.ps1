@@ -1,10 +1,14 @@
-param([string]$CachedWeights = '', [switch]$TripoSG, [switch]$SendPhotoAndGuidesToOpenAI, [switch]$UseCodexHost)
+param([string]$CachedWeights = '', [switch]$TripoSG, [switch]$SendPhotoAndGuidesToOpenAI, [switch]$UseCodexHost, [switch]$ChatGPTPhotoAnalysis)
+if ($ChatGPTPhotoAnalysis -and (!$SendPhotoAndGuidesToOpenAI -or $UseCodexHost)) {
+  throw 'Use -ChatGPTPhotoAnalysis with -SendPhotoAndGuidesToOpenAI for the ChatGPT CLI observation and paint pipeline. -UseCodexHost selects a separate pipeline.'
+}
 if ($UseCodexHost -and !$SendPhotoAndGuidesToOpenAI) {
   throw 'Use -UseCodexHost with -SendPhotoAndGuidesToOpenAI to enable photo transfer for the native host.'
 }
 if ($SendPhotoAndGuidesToOpenAI) {
   $TripoSG = $true
   Write-Host 'Guided paint sends a photo and two rendered views to OpenAI using your ChatGPT plan. Check your remaining allowance and credit settings before enabling it. This preview cannot measure account charges.'
+  if ($ChatGPTPhotoAnalysis) { Write-Host 'Photo analysis also sends one metadata-stripped photo to OpenAI for a text observation. Each job permits one observation and one ImageGen request.' }
 }
 $savedEnv = @{}
 foreach ($name in @('npm_config_cache', 'npm_config_userconfig', 'npm_config_globalconfig')) { $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
@@ -45,7 +49,9 @@ if ($TripoSG) {
   }
   & (Join-Path $PSScriptRoot 'engine\setup-triposg.ps1') @shapeOptions
   $engineOptions = @('--engine', 'triposg')
-  if ($SendPhotoAndGuidesToOpenAI) {
+  if ($ChatGPTPhotoAnalysis) {
+    $engineOptions = @('--engine', 'triposg-observed', '--chatgpt-photo-analysis', '--allow-send-to-openai')
+  } elseif ($SendPhotoAndGuidesToOpenAI) {
     $visionRoot = & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -c 'from engine.guided_shape_job import vision_runtime_path; print(vision_runtime_path())'
     if ($LASTEXITCODE) { throw 'Use an absolute STUDIO_VISUAL_BRIEF_RUNTIME path.' }
     & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -m engine.visual_brief_setup $visionRoot

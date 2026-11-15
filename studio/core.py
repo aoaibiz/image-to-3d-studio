@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from .process_group import ProcessGroup
 from .configure import read_pipeline
-from engine.pipeline import GUIDED_PIPELINES, HOST_PIPELINE, LEGACY_PIPELINE, PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
+from engine.pipeline import GUIDED_PIPELINES, HOST_PIPELINE, LEGACY_PIPELINE, OBSERVED_PIPELINE, PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
 import queue
 import re
 import sqlite3
@@ -39,6 +39,7 @@ class AwaitingHostImage(Exception):
 SHAPE_OUTPUTS = {"shape-master.glb", "appearance.json", "generation.json", "input-processed.png"}
 GUIDED_OUTPUTS = {"guided-paint.json", "guided-views.png", "guided-layout.json", "inferred-paint.png"}
 SHAPE_ERRORS = {
+    "guided_chatgpt_observation": "元写真のChatGPT解析を確認できません。ログイン・利用枠と保存した受付を確認し、同じジョブを再開してください。",
     "guided_observation": "写真の模様を読み取れませんでした。ローカルの画像解析モデルと空きメモリを確認して同じジョブを再開してください。",
     "guided_consent": "OpenAIへの送信設定を確認してください。ローカルの形状はジョブに保存されています。",
     "guided_checkpoint": "保存した形状または塗装の記録を照合できません。ジョブのバックアップを確認してください。",
@@ -669,6 +670,7 @@ class JobCore:
                 "resuming shape",
                 "painting model",
                 "analyzing surface markings",
+                "observing photo with ChatGPT",
                 "preparing shape guides",
                 "requesting inferred paint",
                 "checking hidden surfaces",
@@ -823,8 +825,8 @@ class JobCore:
                         p.unlink()
             if guided:
                 command = [py, "-u", "-m", "engine.guided_shape_job", "--setup", str(self.directory / "engine.json")]
-                if config.get("pipeline") == HOST_PIPELINE:
-                    command.extend(["--pipeline", HOST_PIPELINE])
+                if config.get("pipeline") in (HOST_PIPELINE, OBSERVED_PIPELINE):
+                    command.extend(["--pipeline", config["pipeline"]])
             elif shape:
                 command = [py, "-u", "-m", "engine.local_shape_job"]
             else:

@@ -12,7 +12,7 @@ import subprocess
 import sys
 from urllib.parse import urlsplit, parse_qs
 from .core import JobCore, JobError, PipelineConflict, MAX_INPUT, ROOT, TERMINAL
-from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
+from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS, OBSERVED_PIPELINE, SHAPE_PIPELINE, SHAPE_PIPELINES
 
 STATIC = {
     "/": "viewer/index.html",
@@ -173,7 +173,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/doctor":
             if self.server.core.pipeline in SHAPE_PIPELINES:
                 result = shape_doctor(self.server.core)
-                if self.server.core.pipeline in GUIDED_PIPELINES:
+                if self.server.core.pipeline in (GUIDED_PIPELINE, HOST_PIPELINE):
                     from engine.guided_shape_job import vision_runtime_path
                     from engine.visual_brief_setup import ASSETS, EXECUTABLE, PROJECTOR, WEIGHTS
                     try:
@@ -194,13 +194,20 @@ class Handler(BaseHTTPRequestHandler):
                     result.update(pipeline=HOST_PIPELINE, local=False, recipient="OpenAI ChatGPT")
                     result["diagnostics"]["guided_paint"] = {"provider": "Codex host / OpenAI ImageGen",
                                                              "host_image_tool": "unverified until a connected host returns a generated image"}
-                if self.server.core.pipeline == GUIDED_PIPELINE:
+                if self.server.core.pipeline in (GUIDED_PIPELINE, OBSERVED_PIPELINE):
                     from engine.guided_provider import preflight
                     provider = preflight()
-                    result.update(pipeline=GUIDED_PIPELINE, local=False, recipient="OpenAI ChatGPT")
+                    result.update(pipeline=self.server.core.pipeline, local=False, recipient="OpenAI ChatGPT")
                     result["diagnostics"]["guided_paint"] = provider
                     if not provider.get("available"):
                         result.update(ok=False, message=provider.get("reason") or "Codexの画像生成環境を確認してください。")
+                if self.server.core.pipeline == OBSERVED_PIPELINE:
+                    from engine.codex_photo_observations import preflight
+                    observation = {**preflight(), "method": OBSERVATION_METHODS[-1],
+                                   "recoverable_methods": list(OBSERVATION_METHODS)}
+                    result["diagnostics"]["photo_observer"] = observation
+                    if not observation.get("available"):
+                        result.update(ok=False, message=observation.get("reason") or "元写真を解析するCodexの環境を確認してください。")
                 self.send_json(200, result)
                 return
             checks = {

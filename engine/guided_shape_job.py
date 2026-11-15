@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from engine import local_shape_job, triposg_cpu as sg
-from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, SHAPE_PIPELINE
+from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS, OBSERVED_PIPELINE, SHAPE_PIPELINE
 
 EDITABLE = {
     "model.glb",
@@ -88,6 +88,18 @@ def _validate(directory, pipeline, job_key):
         == generation["foreground"]["source_sha256"]
     ):
         raise ValueError("保存した写真、元の立体と完成GLBのつながりを確認できません。")
+    if pipeline == OBSERVED_PIPELINE:
+        from engine.visual_brief import json_sha
+        observation = generation.get("photo_observation", {})
+        brief = sg.read_json(directory / "guided-layout.json").get("visual_brief", {})
+        if (settings.get("photo_observer") not in OBSERVATION_METHODS
+                or observation.get("method") != settings["photo_observer"]
+                or brief.get("method") != observation["method"]
+                or observation.get("source_sha256") != job_key["input_sha256"]
+                or brief.get("source_sha256") != job_key["input_sha256"]
+                or json_sha(brief) != generation.get("hidden_paint_provider", {}).get("visual_brief_sha256")
+                or generation.get("external_service_requests") != 2):
+            raise ValueError("保存した外観解析を元写真・塗装の記録と照合できません。")
     return settings
 
 
@@ -106,6 +118,52 @@ def _observations(source, work, source_sha):
 
     report = analyze_photo(source, work / "local-observations", runtime=vision_runtime_path())
     return provider_observations(report, source_sha)
+
+
+def _chatgpt_observations(source, work, source_sha, setup):
+    from engine import codex_photo_observations as observer
+
+    cache = work / "photo-observer"
+    # Any downstream checkpoint proves the observation already took place.
+    # Recovery reads the original response and must never launch another turn.
+    has_checkpoint = any((work / name).exists() for name in (
+        "observation-seal.json", "guides", "base", "guided-paint",
+    ))
+    if has_checkpoint or (cache / "receipt.json").exists():
+        report = observer.recover_photo(source, cache)
+    else:
+        _consent(setup, OBSERVED_PIPELINE)
+
+        def consent_now():
+            try:
+                _consent(setup, OBSERVED_PIPELINE)
+            except StageError:
+                return False
+            return True
+
+        report = observer.analyze_photo(source, cache, recipe=observer.METHOD_V2,
+                                       external_opt_in=True, check_consent=consent_now)
+        if report.get("method") != observer.METHOD_V2:
+            raise ValueError("受付時の写真解析方式と完了記録が一致しません。")
+    observation = observer.provider_observations(report, source_sha)
+    if (report["source_sha256"] != source_sha or report["method"] not in OBSERVATION_METHODS
+            or report["api_key_route"] is not False or report["state"] != "completed"
+            or report["recipient"] != "OpenAI ChatGPT" or report["unseen_surface_observed"] is not False):
+        raise ValueError("元写真・送信先・利用方法に対応した完了証跡を確認できません。")
+    # Usage counters and local account details stay in the private provider directory.
+    public = {k: report[k] for k in (
+        "method", "state", "source_sha256", "uploaded_sha256", "request_id", "thread_id",
+        "prompt_sha256", "schema_sha256", "flags_sha256", "output_sha256", "events_sha256", "model",
+        "recipient", "api_key_route", "unseen_surface_observed", "quality",
+    )}
+    seal = work / "observation-seal.json"
+    frozen = {"receipt": public, "visual_brief": observation}
+    if seal.is_file():
+        if sg.read_json(seal) != frozen:
+            raise ValueError("受付時の写真解析と復元した観察結果が一致しません。")
+    else:
+        sg.atomic_json(seal, frozen)
+    return observation, public
 
 
 def _prepare(source, base, work, settings, observations=None):
@@ -164,7 +222,7 @@ def _orientation_check(base, source, sheet, layout, work):
     )
 
 
-def _project(base, guides, sheet, receipt, stage, orientation):
+def _project(base, guides, sheet, receipt, stage, orientation, observation_receipt=None):
     from engine.guided_texture import apply_guides
 
     camera = sg.read_json(base / "generation.json")["camera"]["camera_frame"]
@@ -238,6 +296,9 @@ def _project(base, guides, sheet, receipt, stage, orientation):
         hidden_paint_provider=evidence,
         visual_quality="needs_review",
     )
+    if observation_receipt is not None:
+        generation.update(photo_observation=observation_receipt, external_photo_observations=1,
+                          external_image_generations=1, external_service_requests=2)
     sg.atomic_json(stage / "generation.json", generation)
     for src, dst in (
         (base / "shape-master.glb", "shape-master.glb"),
@@ -300,8 +361,13 @@ def run(source, out, resolution=256, texture_size=1024, *, setup, pipeline=GUIDE
             record(stage)
             # An existing manifest is part of the immutable provider request, including
             # older requests created before local photograph analysis was available.
-            observations = None
-            if not (work / "guides").exists():
+            observations, observation_receipt = None, None
+            if pipeline == OBSERVED_PIPELINE:
+                stage = "guided_chatgpt_observation"
+                print("observing photo with ChatGPT", flush=True)
+                record(stage)
+                observations, observation_receipt = _chatgpt_observations(source, work, key["input_sha256"], setup)
+            elif not (work / "guides").exists():
                 stage = "guided_observation"
                 print("analyzing surface markings", flush=True)
                 record(stage)
@@ -317,6 +383,8 @@ def run(source, out, resolution=256, texture_size=1024, *, setup, pipeline=GUIDE
             print("preparing shape guides", flush=True)
             record(stage)
             guides, layout = _prepare(source, base, work, original, observations)
+            if pipeline == OBSERVED_PIPELINE and layout.get("visual_brief") != observations:
+                raise ValueError("保存した形状ガイドとChatGPTで確認した元写真の解析が一致しません。")
             stage = "guided_provider"
             print("requesting inferred paint", flush=True)
             record(stage)
@@ -328,11 +396,16 @@ def run(source, out, resolution=256, texture_size=1024, *, setup, pipeline=GUIDE
                 if result is None:
                     raise StageError("awaiting_host_image", "Codex の画像生成結果を待っています。")
             else:
+                options = {"pipeline": pipeline} if pipeline == OBSERVED_PIPELINE else {}
                 result = generate_guided_paint(
-                    source, guides / "guides.png", guides / "request-guide.json", work, setup=setup,
+                    source, guides / "guides.png", guides / "request-guide.json", work, setup=setup, **options,
                 )
             sheet = Path(result["sheet"])
             receipt = result["provenance"]
+            if pipeline == OBSERVED_PIPELINE:
+                from engine.visual_brief import json_sha
+                if receipt.get("visual_brief_sha256") != json_sha(observations):
+                    raise ValueError("画像生成の受付が、同じ写真のChatGPT解析に結び付いていません。")
             if not (
                 receipt.get("state") == "completed"
                 and receipt.get("photo_sha256") == layout["photo_sha"]
@@ -355,7 +428,7 @@ def run(source, out, resolution=256, texture_size=1024, *, setup, pipeline=GUIDE
             record(stage)
             with tempfile.TemporaryDirectory(dir=work) as tmp:
                 stage_dir = Path(tmp) / "deliverables"
-                _project(base, guides, sheet, receipt, stage_dir, orientation)
+                _project(base, guides, sheet, receipt, stage_dir, orientation, observation_receipt)
                 stage = "guided_export"
                 print("exporting guided model", flush=True)
                 record(stage)
@@ -369,6 +442,8 @@ def run(source, out, resolution=256, texture_size=1024, *, setup, pipeline=GUIDE
                     "guided_paint_history": "guided-paint.json",
                     "visual_quality": "needs_review",
                 }
+                if observation_receipt:
+                    settings["photo_observer"] = observation_receipt["method"]
                 for name in sorted(hashes):
                     os.replace(stage_dir / name, out / name)
                 sg.atomic_json(out / "settings.json", settings)

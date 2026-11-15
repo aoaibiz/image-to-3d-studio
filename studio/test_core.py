@@ -73,6 +73,20 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("agreement", json.loads(config_file.read_text()))
         self.assertEqual(read_pipeline(directory), SHAPE_PIPELINE)
 
+    def test_chatgpt_observation_requires_its_own_setup_and_persists(self):
+        from engine.pipeline import OBSERVED_PIPELINE
+        directory = self.root / "observed-store"
+        for opt, transfer in [(True,False),(False,True),(False,False)]:
+            with self.assertRaises(ValueError):
+                configure(directory,"triposg-observed",chatgpt_photo_analysis=opt,allow_send_to_openai=transfer)
+        with self.assertRaises(ValueError):
+            configure(directory,"triposg-guided",chatgpt_photo_analysis=True,allow_send_to_openai=True)
+        self.assertEqual(read_pipeline(directory), PIPELINE)
+        configure(directory,"triposg-observed",chatgpt_photo_analysis=True,allow_send_to_openai=True)
+        self.assertEqual(read_pipeline(directory), OBSERVED_PIPELINE)
+        configure(directory,"triposg")
+        self.assertEqual(read_pipeline(directory), SHAPE_PIPELINE)
+
     def test_shape_selection_survives_restart_and_old_requests_remain_idempotent(self):
         old, _ = self.core.create(b"one", "old-key", PIPELINE)
         self.assertTrue(self.started.wait(2))

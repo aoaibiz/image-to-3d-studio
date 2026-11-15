@@ -59,6 +59,26 @@ class GuidedProviderTests(unittest.TestCase):
             self.photo, self.guide, self.manifest, self.job, setup=self.config
         )
 
+    def test_observed_contract_and_brief_do_not_cross_into_prior_pipeline(self):
+        from engine.pipeline import OBSERVED_AGREEMENT, OBSERVED_PIPELINE
+        with self.assertRaises(provider.TurnaroundProviderError):
+            provider._require_consent(self.config, OBSERVED_PIPELINE)
+        self.config.write_text(json.dumps({"pipeline":OBSERVED_PIPELINE,"agreement":OBSERVED_AGREEMENT}))
+        provider._require_consent(self.config, OBSERVED_PIPELINE)
+        with self.assertRaises(provider.TurnaroundProviderError):
+            provider._require_consent(self.config)
+        with patch.object(provider,"preflight") as check:
+            with self.assertRaises(provider.TurnaroundProviderError):
+                provider.generate_guided_paint(self.photo,self.guide,self.manifest,self.job,
+                                               setup=self.config,pipeline=OBSERVED_PIPELINE)
+            check.assert_not_called()
+        self.config.write_text(json.dumps(self.envelope))
+        self.manifest.write_text(json.dumps({**self.desc, "visual_brief":{"method":"codex-photo-observations-v1"}}))
+        with patch.object(provider,"preflight") as check:
+            with self.assertRaises(provider.TurnaroundProviderError):
+                self.generate()
+            check.assert_not_called()
+
     def cli(self, *, create_output, output_size=(128, 64)):
         def start(cmd, **kwargs):
             work = Path(kwargs["cwd"])

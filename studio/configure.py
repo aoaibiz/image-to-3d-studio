@@ -6,14 +6,17 @@ import os
 import tempfile
 from pathlib import Path
 
-from engine.pipeline import GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, PIPELINE, SHAPE_PIPELINE
+from engine.pipeline import (GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVED_AGREEMENT,
+                             OBSERVED_PIPELINE, PIPELINE, SHAPE_PIPELINE)
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINES = {"triposr": PIPELINE, "triposg": SHAPE_PIPELINE, "triposg-guided": GUIDED_PIPELINE,
-           "triposg-guided-host": HOST_PIPELINE}
+           "triposg-guided-host": HOST_PIPELINE, "triposg-observed": OBSERVED_PIPELINE}
 
 
 def agreement(pipeline):
+    if pipeline == OBSERVED_PIPELINE:
+        return OBSERVED_AGREEMENT
     if pipeline == HOST_PIPELINE:
         from engine.host_paint import AGREEMENT
     else:
@@ -36,10 +39,12 @@ def read_pipeline(directory):
     return doc["pipeline"]
 
 
-def configure(directory, engine, *, allow_send_to_openai=False):
+def configure(directory, engine, *, allow_send_to_openai=False, chatgpt_photo_analysis=False):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     pipeline = ENGINES[engine]
+    if (pipeline == OBSERVED_PIPELINE) != bool(chatgpt_photo_analysis):
+        raise ValueError("写真のChatGPT解析には --engine triposg-observed と --chatgpt-photo-analysis を一緒に指定してください。")
     config = {"pipeline": pipeline}
     if pipeline in GUIDED_PIPELINES:
         if not allow_send_to_openai:
@@ -65,5 +70,7 @@ if __name__ == "__main__":
     parser.add_argument("--engine", choices=ENGINES, required=True)
     parser.add_argument("--jobs-dir", type=Path, default=ROOT / "jobs" / "studio")
     parser.add_argument("--allow-send-to-openai", action="store_true", help="Send the photo and two geometry guides to OpenAI using your ChatGPT plan.")
+    parser.add_argument("--chatgpt-photo-analysis", action="store_true", help="Also send the normalized photo for one ChatGPT text observation per job.")
     args = parser.parse_args()
-    print(configure(args.jobs_dir, args.engine, allow_send_to_openai=args.allow_send_to_openai))
+    print(configure(args.jobs_dir, args.engine, allow_send_to_openai=args.allow_send_to_openai,
+                    chatgpt_photo_analysis=args.chatgpt_photo_analysis))

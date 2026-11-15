@@ -357,6 +357,14 @@ def validate_provider_observations(payload, source_sha256):
     }
 
 
+def validate_photo_observations(payload, source_sha256):
+    from engine.pipeline import OBSERVATION_METHODS
+    if isinstance(payload, dict) and payload.get("method") in OBSERVATION_METHODS:
+        from engine.codex_photo_observations import validate_provider_observations as validate_codex
+        return validate_codex(payload, source_sha256)
+    return validate_provider_observations(payload, source_sha256)
+
+
 def _layout(cues):
     return {
         (True, True): "focal_and_repeated",

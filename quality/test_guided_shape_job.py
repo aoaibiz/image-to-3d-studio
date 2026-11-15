@@ -174,6 +174,76 @@ class GuidedJobTests(unittest.TestCase):
         self.invoke()
         self.assertEqual(self.submissions, 1)
 
+    def test_observed_job_binds_two_distinct_receipts_and_resumes_without_observing_again(self):
+        from engine.pipeline import OBSERVED_AGREEMENT
+        from engine.visual_brief import json_sha
+        source_sha = job.sg.digest(self.source)
+        payload = {"method":"codex-photo-observations-v2", "source_sha256":source_sha, "visible_palette":["gold"]}
+        record = dict(method=payload["method"], source_sha256=source_sha, api_key_route=False,
+                      state="completed", recipient="OpenAI ChatGPT", unseen_surface_observed=False,
+                      quality="unverified_photo_interpretation",model="fixture",
+                      request_id="fixture-observation", thread_id="fixture-thread",
+                      uploaded_sha256="a"*64, prompt_sha256="b"*64, schema_sha256="c"*64,
+                      flags_sha256="d"*64, output_sha256="e"*64, events_sha256="f"*64,
+                      plan="private account data")
+        observer = types.ModuleType("engine.codex_photo_observations")
+
+        observer.METHOD_V2 = "codex-photo-observations-v2"
+        def initialize(source, cache, *, recipe, external_opt_in, check_consent):
+            self.assertEqual(recipe, observer.METHOD_V2)
+            self.assertEqual(source_sha, job.sg.digest(source))
+            self.assertTrue(external_opt_in)
+            self.assertIs(check_consent(), True)
+            cache.mkdir()
+            job.sg.atomic_json(cache / "receipt.json", record)
+            return record
+
+        observer.analyze_photo = Mock(side_effect=initialize)
+        observer.recover_photo = Mock(side_effect=lambda source, cache: job.sg.read_json(cache / "receipt.json"))
+        observer.provider_observations = Mock(return_value=payload)
+
+        def paint(*args, pipeline, **kwargs):
+            self.assertEqual(pipeline, job.OBSERVED_PIPELINE)
+            received = self.service(*args, **kwargs)
+            received["provenance"]["visual_brief_sha256"] = json_sha(payload)
+            return received
+
+        self.paint.generate_guided_paint.side_effect = paint
+        job.sg.atomic_json(self.setup, {"pipeline":job.OBSERVED_PIPELINE,"agreement":OBSERVED_AGREEMENT})
+        invoke = lambda: job.run(self.source, self.out, 128, 512, setup=self.setup, pipeline=job.OBSERVED_PIPELINE)
+        self.orientation.return_value = {"hold_projection":True}
+        with patch.dict(sys.modules, {"engine.codex_photo_observations":observer}):
+            with patch("engine.codex_photo_observations", observer, create=True):
+                with self.assertRaises(job.StageError) as held:
+                    invoke()
+                self.assertEqual(held.exception.code,"guided_orientation")
+                self.orientation.return_value = {"hold_projection":False}
+                sealed = invoke()
+                self.assertEqual(invoke(), sealed)
+                observer.analyze_photo.assert_called_once()
+                observer.recover_photo.assert_called_once()
+        self.observer.assert_not_called()
+        self.assertEqual(self.submissions,1)
+        report = job.sg.read_json(self.out / "generation.json")
+        self.assertEqual(report["external_service_requests"],2)
+        self.assertEqual(report["photo_observation"]["output_sha256"], record["output_sha256"])
+        self.assertNotIn("plan",report["photo_observation"])
+        self.assertEqual(sealed["photo_observer"],payload["method"])
+
+    def test_existing_downstream_without_observer_receipt_never_starts_new_remote_turn(self):
+        from engine.pipeline import OBSERVED_AGREEMENT
+        job.sg.atomic_json(self.setup, {"pipeline":job.OBSERVED_PIPELINE,"agreement":OBSERVED_AGREEMENT})
+        observer = Mock()
+        observer.recover_photo.side_effect = ValueError("no sealed receipt")
+        work = self.out / "local-guided-work"
+        (work / "guides").mkdir(parents=True)
+        with patch("engine.codex_photo_observations", observer, create=True):
+            with self.assertRaises(job.StageError) as held:
+                job.run(self.source,self.out,128,512,setup=self.setup,pipeline=job.OBSERVED_PIPELINE)
+        self.assertEqual(held.exception.code,"guided_chatgpt_observation")
+        observer.analyze_photo.assert_not_called()
+        self.paint.generate_guided_paint.assert_not_called()
+
     def test_front_features_duplicated_on_back_hold_before_export(self):
         self.orientation.return_value = {"hold_projection": True, "status": "needs_review"}
         with self.assertRaises(job.StageError) as err:

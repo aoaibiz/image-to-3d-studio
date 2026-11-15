@@ -164,6 +164,36 @@ class HttpTests(unittest.TestCase):
             finally:
                 core.close()
 
+    def test_observed_doctor_reports_both_remote_stages_without_local_vision_weights(self):
+        from studio.configure import configure
+        from engine.pipeline import OBSERVED_PIPELINE
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "store"
+            configure(store,"triposg-observed",chatgpt_photo_analysis=True,allow_send_to_openai=True)
+            core = JobCore(Path(tmp),directory=store,runner=lambda _: None)
+            server = Server(("127.0.0.1", 0),core)
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            try:
+                with (patch("studio.server.shape_doctor", return_value={"ok":True,"diagnostics":{}}),
+                      patch("engine.guided_provider.preflight", return_value={"available":True}),
+                      patch("engine.codex_photo_observations.preflight", return_value={"available":True}),
+                      patch("engine.guided_shape_job.vision_runtime_path",side_effect=AssertionError("Unexpected Qwen dependency"))):
+                    conn = http.client.HTTPConnection("127.0.0.1",server.server_port,timeout=3)
+                    conn.request("GET","/api/doctor")
+                    response = conn.getresponse()
+                    body = json.loads(response.read())
+                    conn.close()
+                self.assertTrue(body["ok"])
+                self.assertEqual(body["pipeline"],OBSERVED_PIPELINE)
+                self.assertFalse(body["local"])
+                self.assertEqual(set(body["diagnostics"]),{"photo_observer","guided_paint"})
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
+                core.close()
+
 
 if __name__ == "__main__":
     unittest.main()
