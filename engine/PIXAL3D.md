@@ -4,6 +4,8 @@ CC0で公開済みの写真を、Hugging Face利用者 `victor` が運営するS
 
 通常のStudioセットアップ後、専用の保存先を指定します。
 
+2026年11月16日の実機試験では、Web画面から新しい公開写真1枚を受け付け、提供元のイベントIDを取得しました。提供元は必要120秒・残り0秒と応答し、この試験に対するGLBの返却は0件でした。この経路の生成品質は未検証です。
+
 ```powershell
 python -m studio.configure --jobs-dir .\jobs\public-cc0 --engine pixal3d-space --allow-public-photo-to-pixal-space
 python -m studio.server --jobs-dir .\jobs\public-cc0
