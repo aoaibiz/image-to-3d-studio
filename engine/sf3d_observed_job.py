@@ -907,6 +907,12 @@ def _validate_result(out, source_sha):
             or report["foreground_sha256"] != hashes["input-processed.png"]
             or report["source_camera_sha256"] != json_sha(gen["registration"])
             or report["observer_request_id"] != gen["photo_observation"]["request_id"]
+            or report["observations_sha256"]
+            != (
+                json_sha(gen["visual_brief"])
+                if native
+                else gen["paint"]["visual_brief_sha256"]
+            )
             or report["observer_output_sha256"]
             != gen["photo_observation"]["output_sha256"]
             or mode == "alternative"

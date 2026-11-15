@@ -286,10 +286,11 @@ class DecisionTests(unittest.TestCase):
 )
 class ArchivedIntegration(unittest.TestCase):
     def test_sealed_watch_recovery_no_network_or_process_launch(self):
-        from engine import sf3d_provider, sf3d_shape_job
+        from engine import inferred_cavity, sf3d_provider, sf3d_shape_job
         from quality.test_sf3d_provider import Replay
         from studio.configure import agreement
 
+        self.assertTrue(callable(inferred_cavity.editor))
         jobs = Path(os.environ["STUDIO_SF3D_OBSERVED_REPLAY"])
         raw = jobs / "sf3d-official-20261116/fresh"
         guided = jobs / "auto-finish-20261116/fresh-guided"
@@ -386,6 +387,7 @@ class ArchivedIntegration(unittest.TestCase):
             self.assertFalse((out / "review-hold.json").exists())
             self.assertTrue(job.valid(out, result))
             self.assertEqual(result["appearance_mode"], "guided_region")
+            self.assertEqual(result["shape_hypothesis"]["decision"], "unchanged")
             self.assertEqual(result["artifact_sha256"]["shape-master.glb"], native_sha)
             self.assertEqual(
                 files.digest(out / "inferred-paint.png"),
@@ -444,6 +446,7 @@ class OptionalShapeTests(unittest.TestCase):
                 "source_sha256": src,
                 "external_image_generations": 0,
                 "photo_observation": observer,
+                "visual_brief": {"source_sha256": src},
                 "camera": camera,
                 "registration": {
                     "mesh_file_sha256": asset["sha256"],
@@ -516,6 +519,35 @@ class OptionalShapeTests(unittest.TestCase):
             self.assertEqual(report["decision"], "unchanged")
             self.assertFalse((stage / "shape-alternative.glb").exists())
 
+    def test_visible_closure_veto_preserves_source_paint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stage, out, src, _, old = self._stage(Path(tmp))
+            info = {"sha256": old["glb_sha256"], "faces": 1}
+
+            def proposes_despite_closure(**args):
+                shutil.copyfile(args["display_model"], args["output"])
+                return {
+                    "method": "fixture",
+                    "decision": "alternative",
+                    "reason": "proposed by test adapter",
+                    "inferred_dimensions": {"depth": 0.2},
+                    "evidence": {
+                        "opening": "plausible",
+                        "visible_closure": True,
+                        "negative_controls_passed": True,
+                        "geometry_supported": True,
+                        "source_registered": True,
+                    },
+                }
+
+            with patch.object(job, "_shape_candidate", return_value=info):
+                result = job._finish_hypothesis(
+                    stage, out, src, job.ShapeEditor(proposes_despite_closure, "1" * 64)
+                )
+            self.assertEqual(result["shape_hypothesis"]["decision"], "unchanged")
+            self.assertEqual(result["glb_sha256"], old["glb_sha256"])
+            self.assertFalse((stage / "shape-alternative.glb").exists())
+
     def test_damaged_source_or_observation_stops_the_editor(self):
         for key in ("source", "observer"):
             with self.subTest(key=key), tempfile.TemporaryDirectory() as tmp:
@@ -543,6 +575,11 @@ class ArchivedShapeIntegration(unittest.TestCase):
         import json
         import struct
 
+        # Scientific libraries may run local capability probes during first import.
+        # Load the shipped plugin before prohibiting all subprocesses throughout the job.
+        from engine import inferred_cavity
+
+        self.assertTrue(callable(inferred_cavity.editor))
         root = Path(os.environ["STUDIO_SF3D_SHAPE_REPLAY"])
         source = root / "input.jpg"
         work = (
