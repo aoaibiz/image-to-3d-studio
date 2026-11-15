@@ -17,7 +17,7 @@ class AlternateFilesTest(unittest.TestCase):
         self.source = "a" * 64
         self.primary = "b" * 64
         self.other = "c" * 64
-        self.report = {"decision": "alternative", "source_sha256": self.source,
+        self.report = {"version": 1, "implementation_sha256": "e" * 64, "decision": "alternative", "source_sha256": self.source,
                        "dimensions_observed": False, "visual_quality": "needs_review",
                        "candidate": {"sha256": self.other}, "painted_before": {"sha256": self.primary},
                        "delivered": {"sha256": self.primary}}
@@ -47,7 +47,7 @@ class AlternateFilesTest(unittest.TestCase):
         self.assertFalse(_hypothesis_files(self.out, self.settings, self.source, forbidden))
 
     def test_measured_dimensions_and_mismatched_master_do_not_activate(self):
-        for overrides in [{"dimensions_observed": True}, {"candidate": {"sha256": self.primary}},
+        for overrides in [{"version": True}, {"implementation_sha256": ""}, {"dimensions_observed": True}, {"candidate": {"sha256": self.primary}},
                           {"delivered": {"sha256": self.other}}, {"source_sha256": self.primary}]:
             (self.out / HYPOTHESIS_REPORT).write_text(json.dumps(self.report | overrides))
             self.assertFalse(_hypothesis_files(self.out, self.settings, self.source, lambda *_: True))

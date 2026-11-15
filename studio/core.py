@@ -63,6 +63,8 @@ def _hypothesis_files(out, settings, source_sha, validate):
                 return {}
             names.update((HYPOTHESIS_GLB, HYPOTHESIS_MASTER))
         elif decision == "applied":
+            if selection.get("paint_master") != "pre-hypothesis.glb":
+                return {}
             names.add("pre-hypothesis.glb")
         elif decision != "unchanged":
             return {}
@@ -71,7 +73,8 @@ def _hypothesis_files(out, settings, source_sha, validate):
                 or not validate(out, settings)):
             return {}
         report = json.loads((out / HYPOTHESIS_REPORT).read_bytes())
-        if report["decision"] != decision or report["source_sha256"] != source_sha:
+        if (type(report["version"]) is not int or report["version"] != 1 or report["decision"] != decision
+                or report["source_sha256"] != source_sha or not re.fullmatch("[0-9a-f]{64}", report["implementation_sha256"])):
             return {}
         if decision == "alternative" and (
                 report["dimensions_observed"] is not False or report["visual_quality"] != "needs_review"
