@@ -58,5 +58,11 @@ Get-VerifiedFile $foregroundUrls '.runtime\u2net\u2net.onnx' '8d10d2f3bb75ae3b6d
 Write-Output 'Python setup complete. Input images remain local.'
 
 } finally {
-  foreach ($name in $savedEnv.Keys) { [Environment]::SetEnvironmentVariable($name, $savedEnv[$name], 'Process') }
+  foreach ($name in $savedEnv.Keys) {
+    if ($null -eq $savedEnv[$name]) {
+      Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+    } else {
+      [Environment]::SetEnvironmentVariable($name, $savedEnv[$name], 'Process')
+    }
+  }
 }

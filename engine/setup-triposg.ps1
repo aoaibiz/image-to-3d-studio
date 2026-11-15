@@ -50,6 +50,10 @@ try {
     & $Python -I -B -u (Join-Path $PSScriptRoot 'triposg_setup.py') @argsForInstaller
     if ($LASTEXITCODE) { throw 'TripoSG setup incomplete. Correct the reported cause and rerun the same command.' }
 } finally {
-    $env:UV_PYTHON_INSTALL_DIR = $savedPythonDir
+    if ($null -eq $savedPythonDir) {
+        Remove-Item -LiteralPath Env:UV_PYTHON_INSTALL_DIR -ErrorAction SilentlyContinue
+    } else {
+        $env:UV_PYTHON_INSTALL_DIR = $savedPythonDir
+    }
     $lease.Dispose()
 }

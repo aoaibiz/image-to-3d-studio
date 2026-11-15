@@ -138,7 +138,8 @@ def run(source, out, resolution, texture_size):
         ):
             raise StageError("shape_inference", "Raw inference provenance mismatch.")
         field = provider / f"field-{resolution}.npy"
-        if not sg.valid_artifact(field, identity["job_key"]):
+        field_receipt = sg.valid_artifact(field, identity["job_key"])
+        if not field_receipt:
             raise StageError(
                 "shape_inference", "Signed distance field failed its provider checksum."
             )
@@ -190,6 +191,7 @@ def run(source, out, resolution, texture_size):
                 {
                     "engine": identity,
                     "shape_result": receipt,
+                    "surface_field": field_receipt,
                     "foreground": stamp,
                     "camera": camera,
                     "stage_history": timings,

@@ -48,6 +48,10 @@ Windows x86-64、PowerShell、`uv`、モデルだけで約 7.95 GB のディス�
 
 記録の `status=runtime-verified` はインストール検査の結果です。`source.files` と `weights.files` に個別のハッシュ、`diagnostics` にライブラリの版と演算結果を保存します。インストーラー単独では画像の生成・品質検品を行いません。利用を終了するときは TripoSG のジョブを終了して、このセットアップ専用のランタイムディレクトリを取り除けます。
 
+実行中のジョブを再開する場合は、受付時のインストールを保持してください。形状の途中状態は `identity.json` に記録したエンジンのコード・重み・実行条件のハッシュに結び付いています。エンジンを更新する場合は、先に現在のジョブを終了するか、元のインストールとジョブを保管して新しい場所でセットアップします。
+
 ## 第三者の利用条件
+
+本プロジェクトで検証した固定版は、DiT実装に同梱の規約でEU域外を利用対象とし、第5条(c)で生成結果の利用・配布・表示にも地域を定めています。TripoSGによる検品モデルは各利用者が対象地域のローカル環境で生成してください。GitHubの公開デモには従来のTripoSRで作成した配布可能なモデルを掲載しています。
 
 上流の重みのモデルカードとコードのトップレベルには MIT が明記されています。CPU 経路でも使う DiT 実装には Tencent Hunyuan Community License の全文が含まれ、EU を除く地域を対象としています。上流の NOTICE には Diffusers、RMBG、FlashVDM の出典・利用条件も記載されています。重みと第三者コードはこのリポジトリに同梱せず、専用ディレクトリに上流の NOTICE、LICENSE とソース内ライセンスを保存します。各配布元の条件・地域を確認してください。[上流 LICENSE](https://github.com/VAST-AI-Research/TripoSG/blob/fc5c40990181e2a756c4e0b1c2f4d6b5202faf8c/LICENSE) · [NOTICE](https://github.com/VAST-AI-Research/TripoSG/blob/fc5c40990181e2a756c4e0b1c2f4d6b5202faf8c/NOTICE) · [DiT 実装内のライセンス](https://github.com/VAST-AI-Research/TripoSG/blob/fc5c40990181e2a756c4e0b1c2f4d6b5202faf8c/triposg/models/transformers/triposg_transformer.py)

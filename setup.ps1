@@ -34,5 +34,11 @@ Write-Host 'Setup complete. Start: .\.runtime\venv\Scripts\python.exe -m studio.
 Write-Host 'Open http://127.0.0.1:47631'
 
 } finally {
-  foreach ($name in $savedEnv.Keys) { [Environment]::SetEnvironmentVariable($name, $savedEnv[$name], 'Process') }
+  foreach ($name in $savedEnv.Keys) {
+    if ($null -eq $savedEnv[$name]) {
+      Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+    } else {
+      [Environment]::SetEnvironmentVariable($name, $savedEnv[$name], 'Process')
+    }
+  }
 }
