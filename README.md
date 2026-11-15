@@ -28,16 +28,18 @@
 
 ## 写真から背面の塗装を推定する（プレビュー）
 
-Windows で次の初期設定を1回行うと、1枚の写真からローカルで色・模様・正面の部品を読み取り、TripoSG の立体から背面の確認画像を作ります。塗装の提案には本人の ChatGPT 利用枠を使用し、メタデータを除いた元写真と立体の確認画像を OpenAI に送信します。プロンプトへの模様の書き足しは不要です。アカウントの残枠は事前に確認してください。
+Windows で次の初期設定を1回行うと、写真を貼るだけで、Codex が色、繰り返し模様、正面にある部品と、反対面で役割が変わる可能性を読み取ります。本人の ChatGPT 利用枠で、写真の解析を1回、立体から作ったガイドを使った塗装の生成を1回依頼します。送信先は OpenAI、送信内容はメタデータを除いた元写真と立体の確認画像です。模様の指示は不要です。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -SendPhotoAndGuidesToOpenAI
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -SendPhotoAndGuidesToOpenAI -ChatGPTPhotoAnalysis
 .\.runtime\venv\Scripts\python.exe -m studio.server
 ```
 
-Codex 内蔵の画像生成を使う構成では、上の初期設定に `-UseCodexHost` を追加します。通常の Web 画面だけで使う構成は、画像生成を利用できる Codex CLI への ChatGPT ログインが必要です。短いインストール先（例 `C:\3d\studio`）を使うと、Windows のパス長制限による依存関係のインストール失敗を避けやすくなります。
+Web 画面だけでこの構成を使うには、画像生成を利用できる Codex CLI に ChatGPT でログインしてください。写真の解析をローカルの Qwen で行う場合は `-ChatGPTPhotoAnalysis` を省きます。Codex 内蔵の画像生成を使う場合は、同フラグを `-UseCodexHost` に替えてください。短いインストール先（例 `C:\3d\studio`）を使うと、Windows のパス長制限による導入失敗を避けやすくなります。
 
 生成した裏面に正面特有の部品が重なる、または推定画像の輪郭・穴が形状に合わない場合は投影を止めます。GLB の外観は正面・側面・背面と無地表示で検品してください。無料のローカル構成、外部送信の解除、モデルの利用条件は各手順で確認できます。[写真解析](engine/VISUAL_BRIEF.md) ・ [TripoSG](engine/TRIPOSG.md) ・ [クライアント設定](clients/README.md)
+
+外部送信を解除するときは `.\.runtime\venv\Scripts\python.exe -m studio.configure --engine triposr` を実行し、Studio を再起動してください。
 
 ## 起動する
 
