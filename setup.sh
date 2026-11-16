@@ -35,5 +35,13 @@ install -m 755 "$root/tools/validator/gltf_validator" "$runtime/validator/gltf_v
 
 # Each checkout uses the Chromium build paired with its locked Playwright version.
 PLAYWRIGHT_BROWSERS_PATH="$runtime/browsers" node "$root/viewer/node_modules/playwright/cli.js" install chromium
+PLAYWRIGHT_BROWSERS_PATH="$runtime/browsers" node -e '
+    const { chromium } = require("./viewer/node_modules/playwright");
+    chromium.launch({headless: true}).then(browser => browser.close()).catch(error => {
+        console.error(error.message);
+        console.error("Chromium could not start. Check the operating system requirements in README.md, then rerun setup.sh.");
+        process.exitCode = 1;
+    });
+'
 echo 'Studio is ready. From this directory, run .runtime/venv/bin/python -m studio.server'
 echo 'Open http://127.0.0.1:47631'
