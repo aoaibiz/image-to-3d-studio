@@ -31,16 +31,20 @@ export async function request(path, options = {}) {
 export async function json(path, options) {
   return (await request(path, options)).json();
 }
-export function submit(bytes, mime, key) {
+export function submit(bytes, mime, key, expectedPipeline) {
   if (!["image/png", "image/jpeg", "image/webp"].includes(mime))
     throw Error("Image must be PNG, JPEG, or WebP");
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key || ""))
     throw Error(
       "A stable request key of 1–128 letters, digits, dot, underscore, colon or hyphen is required",
     );
+  if (expectedPipeline !== undefined && !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(expectedPipeline))
+    throw Error("Invalid expected pipeline");
   return json("/api/jobs", {
     method: "POST",
-    headers: { "Content-Type": mime, "Idempotency-Key": key },
+    headers: { "Content-Type": mime, "Idempotency-Key": key,
+      ...(expectedPipeline === undefined ? {} : { "X-Studio-Pipeline": expectedPipeline }),
+    },
     body: bytes,
   });
 }

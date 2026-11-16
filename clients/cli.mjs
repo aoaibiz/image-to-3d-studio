@@ -19,16 +19,20 @@ try {
     case "diagnose":
       output(await json("/api/doctor"));
       break;
+    case "engine":
+      output(await json("/api/engine"));
+      break;
     case "generate": {
-      const [file, key] = args;
-      if (!file || !key) throw Error("generate <image> <stable-request-key>");
+      const [file, key, flag, expectedPipeline] = args;
+      if (!file || !key || !(args.length === 2 || (args.length === 4 && flag === "--pipeline")))
+        throw Error("generate <image> <stable-request-key> [--pipeline <id>]");
       const mime = {
         ".png": "image/png",
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
         ".webp": "image/webp",
       }[extname(file).toLowerCase()];
-      output(await submit(await readFile(file), mime, key));
+      output(await submit(await readFile(file), mime, key, expectedPipeline));
       break;
     }
     case "status":
@@ -76,7 +80,7 @@ try {
     }
     default:
       throw Error(
-        "Commands: diagnose, generate <image> <stable-request-key>, status, watch, cancel, resume, show, export, inspect",
+        "Commands: diagnose, engine, generate <image> <stable-request-key> [--pipeline <id>], status, watch, cancel, resume, show, export, inspect, review",
       );
   }
 } catch (error) {
