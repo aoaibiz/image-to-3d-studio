@@ -1,0 +1,2 @@
+*.sh text eol=lf
+tools/validator/gltf_validator text eol=lf

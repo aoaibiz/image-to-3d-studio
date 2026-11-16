@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from .process_group import ProcessGroup
 from .configure import read_pipeline
+from tools.doctor import runtime_python, runtime_validator
 from engine.pipeline import (GUIDED_PIPELINES, HOST_PIPELINE, LEGACY_PIPELINE, OBSERVED_PIPELINE, SG_CHART_PIPELINE,
                              PIPELINE, PIXAL_PIPELINE, SPACE_PIPELINES, SF3D_OBSERVED_PIPELINE, SF3D_PIPELINE,
                              SHAPE_PIPELINE, SHAPE_PIPELINES)
@@ -19,7 +20,6 @@ import uuid
 ROOT = Path(__file__).resolve().parent.parent
 TERMINAL = {"needs_review", "review_hold", "failed", "cancelled", "interrupted"}
 MAX_INPUT = 20 * 1024 * 1024
-PYTHON = ROOT / ".runtime" / "venv" / "Scripts" / "python.exe"
 
 
 def now():
@@ -602,7 +602,8 @@ class JobCore:
         try:
             result = subprocess.run(
                 [
-                    str(self.root / ".runtime" / "venv" / "Scripts" / "python.exe"),
+                    str(runtime_python(self.root / ".runtime")),
+                    "-I",
                     "-c",
                     script,
                 ],
@@ -677,7 +678,7 @@ class JobCore:
             if exc.name != "PIL":
                 raise
             check = subprocess.run(
-                [str(self.root / ".runtime/venv/Scripts/python.exe"), "-c",
+                [str(runtime_python(self.root / ".runtime")), "-c",
                  "import sys; from engine.guided_provider import _sheet; _sheet(sys.stdin.buffer.read())"],
                 cwd=self.root, input=data, capture_output=True, timeout=30,
             )
@@ -758,18 +759,21 @@ class JobCore:
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True
             )
         else:
-            import signal
-
-            os.killpg(proc.pid, signal.SIGKILL)
+            proc.stdin.close()
 
     def _command(self, job_id, command, stage):
         with self.lock:
             if self.get(job_id)["status"] != "running":
                 raise JobError("cancelled")
             self._update(job_id, "running", stage)
+            # A separate session isolates cancellation on POSIX. The supervisor's
+            # stdin is a lifetime pipe so a Studio crash also ends the job tree.
+            if os.name != "nt":
+                command = [sys.executable, "-I", str(Path(__file__).with_name("process_group.py")), *command]
             proc = subprocess.Popen(
                 command,
                 cwd=self.root,
+                stdin=subprocess.PIPE if os.name != "nt" else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -831,6 +835,8 @@ class JobCore:
         proc.stdout.close()
         code = proc.wait()
         with self.lock:
+            if proc.stdin is not None:
+                proc.stdin.close()
             self.process = None
             if self.get(job_id)["status"] != "running":
                 raise JobError("cancelled")
@@ -918,7 +924,7 @@ class JobCore:
         # A rerun creates new verification evidence; an earlier opinion must not be reused.
         (out / "review.json").unlink(missing_ok=True)
         (out / "semantic-inspection.json").unlink(missing_ok=True)
-        py = str(self.root / ".runtime" / "venv" / "Scripts" / "python.exe")
+        py = str(runtime_python(self.root / ".runtime"))
         glb = out / "model.glb"
         settings_path = out / "settings.json"
         config = self.get(job_id)["config"]
@@ -1034,7 +1040,7 @@ class JobCore:
             from .chart_results import publish_chart_hold
             publish_chart_hold(out, settings, self.get(job_id)["input_sha256"])
             raise ReviewHold()
-        validator = self.root / ".runtime" / "validator" / "gltf_validator.exe"
+        validator = runtime_validator(self.root / ".runtime")
         cmd = [py, str(self.root / "quality" / "inspection.py"), str(glb)]
         from quality.measured_regions import measured_profile
 

@@ -1,11 +1,14 @@
 # Local clients
 
+For installation on Windows, macOS and Linux, see [AI クライアント導入手順](../docs/AGENT-CLIENTS.md). Run `node clients/agent-config.mjs stdio` from the checkout to print the resolved launch command and arguments, or choose your client's native configuration format from that guide. The standard local pipeline needs no Codex account.
+
 Requires Node.js 22 and the local Studio service listening at `127.0.0.1:47631`. The clients do not start the service. Install locally with `npm ci` in this directory.
 
 CLI:
 
 ```
 node cli.mjs diagnose
+node cli.mjs engine
 node cli.mjs generate path/to/image.png your-stable-request-key
 node cli.mjs status JOB_ID
 node cli.mjs watch JOB_ID
@@ -44,7 +47,7 @@ Tested with Windows Codex CLI 0.169.0-alpha.11.1 in a separate Codex home: marke
 
 ## Other hosts and remote use
 
-Claude Code and Cursor can run a local stdio MCP server, but neither host has been tested with this project. Following their current documentation, point their local MCP registration at `node` with an absolute argument `<checkout>/clients/mcp.mjs`; install dependencies and start Studio first. Claude Code's `claude mcp add --transport stdio image-to-3d-studio -- node <absolute-checkout>/clients/mcp.mjs` writes host configuration, so run it only in the intended scope. Cursor's project `.cursor/mcp.json` may contain `{"mcpServers":{"image-to-3d-studio":{"type":"stdio","command":"node","args":["<absolute-checkout>/clients/mcp.mjs"]}}}`; replace the placeholder with a properly JSON-escaped path. Verify each host's permissions and tool discovery. References: https://code.claude.com/docs/en/mcp and https://cursor.com/docs/mcp.
+For Claude Code, Cursor, Gemini CLI, VS Code/Copilot, Codex without the plugin, or another stdio host, follow the [configuration table and one-photo workflow](../docs/AGENT-CLIENTS.md). Clients can call `engine` and pass its `pipeline` to `generate` as `expectedPipeline` (CLI: `--pipeline ID`) to reject submissions if the active mode changes.
 
 Cloud agents cannot reach the user's `127.0.0.1` through this local setup. Remote access would require a separately designed and authorized authenticated bridge and explicit exposure decisions; no tunnel or bridge is provided by default.
 

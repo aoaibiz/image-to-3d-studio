@@ -13,6 +13,7 @@ import subprocess
 import sys
 from urllib.parse import urlsplit, parse_qs
 from .core import JobCore, JobError, PipelineConflict, MAX_INPUT, ROOT, TERMINAL
+from tools.doctor import executable_file, runtime_python, runtime_validator
 from engine.pipeline import (GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS,
                              OBSERVED_PIPELINE, PIXAL_PIPELINE, PIXAL_RECIPIENT, SPACE_PIPELINES, SF3D_OBSERVED_PIPELINE, SG_CHART_PIPELINE,
                              SHAPE_PIPELINE, SHAPE_PIPELINES)
@@ -62,17 +63,19 @@ def shape_doctor(core):
         result["message"] = "STUDIO_TRIPOSG_RUNTIME には絶対パスを指定してください。"
         return result
     base = core.root / ".runtime"
-    python = base / "venv/Scripts/python.exe"
-    shape_python = runtime / "venv/Scripts/python.exe"
+    python = runtime_python(base)
+    shape_python = runtime_python(runtime)
     model_dir = runtime / "weights"
     foreground = base / "u2net/u2net.onnx"
     source = runtime / "source/triposg"
     resources = [model_dir / name for name in WEIGHTS]
-    checks.update(python=python.is_file(), shape_python=shape_python.is_file(),
+    checks.update(python=executable_file(python), shape_python=executable_file(shape_python),
                   shape_source=(source / "models/transformers/triposg_transformer.py").is_file(),
                   model=all(p.is_file() for p in resources), foreground_model=foreground.is_file(),
-                  validator=(base / "validator/gltf_validator.exe").is_file(), node=bool(shutil.which("node")),
+                  validator=executable_file(runtime_validator(base)), node=bool(shutil.which("node")),
                   viewer=(core.root / "viewer/node_modules/three/build/three.module.js").is_file())
+    if os.name != "nt":
+        result["message"] = "同梱の TripoSG セットアップは Windows x64 用です。macOS・Linux のローカル生成には TripoSR を設定してください。"
     if not all(checks.values()):
         return result
     # Cache successful multi-GB verification while the local files are unchanged.
@@ -205,12 +208,16 @@ class Handler(BaseHTTPRequestHandler):
                                     if pipeline == SG_CHART_PIPELINE else {})})
             return
         if path == "/api/doctor":
+            root = self.server.core.root
+            runtime = root / ".runtime"
+            checks = {
+                "python": executable_file(runtime_python(runtime)),
+                "foreground_model": (runtime / "u2net/u2net.onnx").is_file(),
+                "validator": executable_file(runtime_validator(runtime)),
+                "node": bool(shutil.which("node")),
+                "viewer": (root / "viewer/node_modules/three/build/three.module.js").is_file(),
+            }
             if self.server.core.pipeline in SPACE_PIPELINES:
-                checks = {name: (ROOT / path).is_file() for name, path in {
-                    "python": ".runtime/venv/Scripts/python.exe", "foreground_model": ".runtime/u2net/u2net.onnx",
-                    "validator": ".runtime/validator/gltf_validator.exe", "viewer": "viewer/node_modules/three/build/three.module.js",
-                }.items()}
-                checks["node"] = bool(shutil.which("node"))
                 result = {**space_engine_info(self.server.core.pipeline), "ok": all(checks.values()), "checks": checks,
                           "diagnostics": {"remote_availability": "未確認。実行時に公式Spaceの混雑・匿名利用枠を確認します。"}}
                 if self.server.core.pipeline == PIXAL_PIPELINE:
@@ -247,16 +254,7 @@ class Handler(BaseHTTPRequestHandler):
                     add_codex_checks(result, observation=self.server.core.pipeline in (OBSERVED_PIPELINE, SG_CHART_PIPELINE))
                 self.send_json(200, result)
                 return
-            checks = {
-                "python": (ROOT / ".runtime/venv/Scripts/python.exe").is_file(),
-                "model": (ROOT / ".runtime/model/model.ckpt").is_file(),
-                "foreground_model": (ROOT / ".runtime/u2net/u2net.onnx").is_file(),
-                "validator": (ROOT / ".runtime/validator/gltf_validator.exe").is_file(),
-                "node": bool(shutil.which("node")),
-                "viewer": (
-                    ROOT / "viewer/node_modules/three/build/three.module.js"
-                ).is_file(),
-            }
+            checks["model"] = (runtime / "model/model.ckpt").is_file()
             core = self.server.core
             weight_key = []
             for relative in (
@@ -266,7 +264,7 @@ class Handler(BaseHTTPRequestHandler):
                 "u2net/u2net.onnx",
             ):
                 try:
-                    stat = (ROOT / ".runtime" / relative).stat()
+                    stat = (runtime / relative).stat()
                     weight_key.append((stat.st_size, stat.st_mtime_ns))
                 except OSError:
                     weight_key.append(None)
@@ -288,7 +286,7 @@ class Handler(BaseHTTPRequestHandler):
                     probe = subprocess.run(
                         [
                             sys.executable,
-                            str(ROOT / "tools" / "doctor.py"),
+                            "-X", "utf8", str(root / "tools" / "doctor.py"),
                             "--verify-weights",
                         ],
                         capture_output=True,
@@ -318,7 +316,7 @@ class Handler(BaseHTTPRequestHandler):
                     "architecture": platform.machine(),
                     "ram": local_memory(),
                     "graphics": gpu_inventory(),
-                    "disk_free_bytes": shutil.disk_usage(ROOT).free,
+                    "disk_free_bytes": shutil.disk_usage(root).free,
                     "local_cpu": {
                         "engine": "TripoSR",
                         "weight_verification": "unchecked",

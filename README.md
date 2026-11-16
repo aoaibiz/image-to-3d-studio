@@ -1,6 +1,6 @@
 # image-to-3d-studio
 
-画像を1枚貼り付けて「3D を生成」を押すと、Windows PC 内で立体を生成し、同じ画面で回して確認できます。通常操作でレシピやモデルを選ぶ必要はありません。
+画像を1枚貼り付けて「3D を生成」を押すと、手元のコンピューターで立体を生成し、同じ画面で回して確認できます。通常操作でレシピやモデルを選ぶ必要はありません。標準の CPU 生成には、Codex へのログインも、生成サービスの API キーも必要ありません。[各 AI から使う](docs/AGENT-CLIENTS.md)
 
 小物や製品など、初めての被写体にも同じ生成ボタンを使います。TripoSR が実際の画像から奥行きと見えない面を推定します。汎用の仕上げでは入力の輪郭を推論メッシュに照合し、輪郭・角・独立した部品を保護しながら表面と色を整えます。照合が難しい場合は推論版を残し、その理由をジョブに記録します。
 
@@ -73,7 +73,17 @@ Web 画面だけでこの構成を使うには、画像生成を利用できる 
 
 ## 起動する
 
-Windows 11 x64、Git、[uv](https://docs.astral.sh/uv/getting-started/installation/)、Node.js 22 と npm、WebGL を利用できる Chrome または Edge を用意してください。実測環境は Ryzen 7 255、RAM 29.8 GiB、Radeon 780M です。推論は CPU を使用します。初回に約1.68 GBの重みのほか、Python・依存パッケージ・検証ツールをダウンロードするため、数 GB の空き容量が必要です。
+Git、[uv](https://docs.astral.sh/uv/getting-started/installation/)、Node.js 22 と npm、WebGL 対応ブラウザーを用意します。初回に約 1.68 GB の重み、Python、依存ライブラリ、検品ツールをダウンロードします。重みと生成物を保存できる空き容量を確保してください。
+
+| 生成を実行する端末 | 標準のローカル CPU 構成 |
+| --- | --- |
+| Windows 11 x64 | PowerShell を使用。従来版の実測環境は Ryzen 7 255、RAM 29.8 GiB、Radeon 780M。 |
+| macOS 14 以降（Apple Silicon・Intel） | 下記のシェルを使用。推論エンジン単体の対象は macOS 13 以降。 |
+| Linux x86_64 | 同じシェルを使用。検品用ブラウザーを含む構成の対象は Ubuntu 22.04/24.04、Debian 12/13。 |
+
+macOS・Linux は依存パッケージと起動経路の静的レビューまで行いました。今回の変更でのインストール、生成、各 AI アプリへの接続は実機未検証です。上記は標準の TripoSR の対象です。追加エンジンは個別の導入条件に従ってください。[CPU エンジンの条件](engine/README.md) ・ [検品用ブラウザーの動作条件](https://github.com/microsoft/playwright/blob/v1.56.1/docs/src/intro-js.md#system-requirements)
+
+**Windows**
 
 ```powershell
 git clone https://github.com/aoaibiz/image-to-3d-studio.git
@@ -81,6 +91,17 @@ cd image-to-3d-studio
 powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 .\.runtime\venv\Scripts\python.exe -m studio.server
 ```
+
+**macOS・Linux**
+
+```sh
+git clone https://github.com/aoaibiz/image-to-3d-studio.git
+cd image-to-3d-studio
+sh setup.sh
+.runtime/venv/bin/python -m studio.server
+```
+
+`curl` と `shasum` または `sha256sum` も使います。Linux で Chromium が共有ライブラリ不足を報告した場合は、対象ディストリビューションの管理者が `node viewer/node_modules/playwright/cli.js install-deps chromium` で OS 側の依存を用意した後、セットアップを再実行してください。
 
 [ローカル画面](http://127.0.0.1:47631) を開きます。PNG・JPEG・WebPを貼り付けるか、ドロップまたはファイル選択し、「3D を生成」を押してください。GLBが開いたら、ドラッグで回転、ホイールで拡大します。背面・側面・上下面の視点、照明、白い無地、ワイヤーを切り替えられます。ダウンロードする GLB は表示中のものと同じです。停止はサーバーを起動したウィンドウで Ctrl+C。実行ポリシーの指定はこのセットアップ用プロセスにのみ適用されます。
 
@@ -104,9 +125,11 @@ TripoSG を使う場合の初回セットアップは `powershell -NoProfile -Ex
 
 検査状態は形式・部位の形状・外観に分かれます。生成直後の `needs_review` は人または画像を確認できる AI による検品待ちです。立ち姿として仕上げた対象では、画像から求めた頭・胴の位置で完成GLBの断面を検査します。範囲や断面が不明確な場合は要確認です。対象や範囲の手動指定もできます。尻尾を含む全体の奥行きだけでは合格にしません。薄い商品に猫の基準を一律適用しません。元絵に対する顔や模様の一致は、無地の側面で見る立体感とは別に確認します。[断面の指定と回帰テスト](quality/README.md)
 
-## CLI・MCP・Codex
+## AI エージェントから使う
 
-Web・CLI・MCP は同じローカルサービスとジョブを使用します。別の PowerShell で実行してください。
+Web・CLI・標準 MCP は同じローカルサービスとジョブを使用します。Claude Code、Cursor、Gemini CLI、Copilot、Codex の設定は `node clients/agent-config.mjs` にホスト名を指定して表示できます。その他のエージェントは `stdio` の設定、または下記の CLI を使用してください。ローカルプロセスを起動できないクラウド AI には、その実行環境に Studio を置くか、利用者が管理する認証付きブリッジが必要です。[ホスト別の設定・画像の渡し方](docs/AGENT-CLIENTS.md)
+
+Studio の起動後、別のターミナルから実行します。
 
 ```powershell
 node clients/cli.mjs diagnose

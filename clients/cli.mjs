@@ -20,17 +20,26 @@ try {
     case "diagnose":
       output(await json("/api/doctor"));
       break;
+    case "engine":
+      output(await json("/api/engine"));
+      break;
     case "generate": {
-      const [file, key, grant] = args;
-      if (!file || !key || args.length > 3 || (grant && grant !== "--public-cc0-to-pixal"))
-        throw Error("generate <image> <stable-request-key> [--public-cc0-to-pixal]");
+      const [file, key, ...options] = args;
+      const usage = "generate <image> <stable-request-key> [--pipeline <id>] [--public-cc0-to-pixal]";
+      if (!file || !key) throw Error(usage);
+      let grant = false, expectedPipeline;
+      for (let i = 0; i < options.length; i++) {
+        if (options[i] === "--public-cc0-to-pixal" && !grant) grant = true;
+        else if (options[i] === "--pipeline" && expectedPipeline === undefined && options[i + 1]) expectedPipeline = options[++i];
+        else throw Error(usage);
+      }
       const mime = {
         ".png": "image/png",
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
         ".webp": "image/webp",
       }[extname(file).toLowerCase()];
-      output(await submit(await readFile(file), mime, key, grant === "--public-cc0-to-pixal"));
+      output(await submit(await readFile(file), mime, key, grant, expectedPipeline));
       break;
     }
     case "status":
@@ -88,7 +97,7 @@ try {
     }
     default:
       throw Error(
-        "Commands: diagnose, generate <image> <stable-request-key>, status, watch, cancel, resume, show, export, inspect, claim-paint <id>, submit-paint <id> <claim> <request-sha> <tool-call-id> <png>",
+        "Commands: diagnose, engine, generate <image> <stable-request-key> [--pipeline <id>] [--public-cc0-to-pixal], status, watch, cancel, resume, show, export, inspect, review, claim-paint <id>, submit-paint <id> <claim> <request-sha> <tool-call-id> <png>",
       );
   }
 } catch (error) {

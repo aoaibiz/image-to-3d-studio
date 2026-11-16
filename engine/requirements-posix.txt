@@ -1,0 +1,6 @@
+# Native CPU inference only. Linux's default PyPI torch distribution pulls CUDA.
+-r requirements.txt
+torch==2.2.2 ; sys_platform == "darwin"
+torchvision==0.17.2 ; sys_platform == "darwin"
+torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.2.2%2Bcpu-cp311-cp311-linux_x86_64.whl#sha256=90089cae572672fb449c8ff1dc1b29daaffa117bf97ede7463dcd2fd1b991e4c ; sys_platform == "linux" and platform_machine == "x86_64"
+torchvision @ https://download-r2.pytorch.org/whl/cpu/torchvision-0.17.2%2Bcpu-cp311-cp311-linux_x86_64.whl#sha256=5f39e3bee1eba1b66e48753f85faa8d3698ec401ce90b09c7b36efd885129617 ; sys_platform == "linux" and platform_machine == "x86_64"

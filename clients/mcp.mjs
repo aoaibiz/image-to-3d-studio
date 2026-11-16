@@ -22,6 +22,9 @@ const register = (name, description, inputSchema, fn) =>
 register("diagnose", "Check the local studio service.", {}, () =>
   json("/api/doctor"),
 );
+register("engine", "Read the active generation pipeline, locality and any declared external recipients before sending a photo.", {}, () =>
+  json("/api/engine"),
+);
 register(
   "generate",
   "Submit base64 image bytes with a stable request key. Reusing the key is idempotent.",
@@ -30,8 +33,9 @@ register(
     imageBase64: z.string(),
     mime: z.enum(["image/png", "image/jpeg", "image/webp"]),
     requestKey: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/),
+    expectedPipeline: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/).optional().describe("Use the pipeline returned by engine so a configuration change cannot silently change the recipient."),
   },
-  ({ imageBase64, mime, requestKey, publicCC0ToPixal }) => {
+  ({ imageBase64, mime, requestKey, publicCC0ToPixal, expectedPipeline }) => {
     if (imageBase64.length > Math.ceil((20 * 1024 * 1024) / 3) * 4)
       throw Error("画像は20MB以下で選び直してください。");
     const bytes = Buffer.from(imageBase64, "base64");
@@ -41,7 +45,7 @@ register(
       bytes.toString("base64") !== imageBase64
     )
       throw Error("画像のBase64形式を確認してください。");
-    return submit(bytes, mime, requestKey, publicCC0ToPixal);
+    return submit(bytes, mime, requestKey, publicCC0ToPixal, expectedPipeline);
   },
 );
 register("status", "Read job status.", { jobId: id }, ({ jobId }) =>

@@ -1,0 +1,28 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const validator = require('gltf-validator');
+
+async function main() {
+  const [mode, filename] = process.argv.slice(2);
+  if (mode !== '-o' || !filename || process.argv.length !== 4) {
+    throw new Error('Usage: gltf_validator -o model.glb');
+  }
+  const bytes = await fs.readFile(filename);
+  const report = await validator.validateBytes(bytes, {
+    uri: path.basename(filename),
+    format: 'glb',
+    externalResourceFunction: async () => {
+      throw new Error('Studio exports must embed their resources in the GLB.');
+    },
+  });
+  process.stdout.write(JSON.stringify(report));
+  process.exitCode = report.issues.numErrors === 0 ? 0 : 1;
+}
+
+main().catch(error => {
+  console.error(String(error));
+  process.exitCode = 1;
+});

@@ -1,5 +1,16 @@
 # Local CPU inference
 
+**macOS / Linux, engine only:** In a dedicated checkout, install [uv](https://docs.astral.sh/uv/getting-started/installation/), Git, curl and a SHA-256 utility. Run:
+
+```sh
+sh engine/setup-posix.sh
+.runtime/venv/bin/python -u engine/infer.py "/path/to/photo.jpg" "/path/to/new-output"
+```
+
+The POSIX installer targets macOS 13+ on Apple Silicon or Intel and glibc 2.28+ Linux on x86_64. It uses CPU inference, even on machines with a GPU. It installs private Python 3.11.15 and the pinned TripoSR code/configuration/weights; local inference does not upload photos or require an AI account. The only external requests during setup are for public tooling, packages, source, and models. Allow several GB for runtime, weights and caches, plus memory for inference. Linux arm64, Alpine/musl, MPS and CUDA are not targeted by this installer. Optional providers have separate setup requirements. Native POSIX installation and inference have not been run in this release.
+
+The runtime uses [PyTorch 2.2.2 with torchvision 0.17.2](https://pytorch.org/get-started/previous-versions/#v222). On Linux the requirements select the upstream CPU wheels explicitly. Apple Silicon uses [xatlas 0.0.11](https://pypi.org/project/xatlas/0.0.11/#files) for its native wheel; Intel macOS uses [Numba 0.60.0](https://pypi.org/project/numba/0.60.0/#files) with llvmlite 0.43.0. See `requirements-posix.txt` and `requirements.txt` for exact versions. Repeat setup in the same checkout to reuse verified assets, or use a fresh checkout to keep an existing environment untouched.
+
 From the project root, install uv from https://docs.astral.sh/uv/getting-started/installation/, then run `powershell -ExecutionPolicy Bypass -File engine/setup.ps1`. The setup installs Python 3.11.15 and dependencies into `.runtime/venv`, checks out TripoSR commit `107cefdc244c39106fa830359024f6a2f1c78871`, and downloads the official weights. The model file SHA-256 is checked against the official model repository metadata. Downloads are free; allow several gigabytes of disk space.
 
 Run `.runtime\venv\Scripts\python.exe -u engine\infer.py INPUT.png OUTPUT_DIRECTORY --resolution 64 --texture-size 512`. Transparent inputs are cropped and centered automatically. For ordinary opaque photographs, rembg uses the U2Net weights provisioned by setup to remove the background locally; `--no-remove-bg` disables that for already framed inputs. Model weights and public configuration are downloaded; input images are not uploaded. Run one job at a time. 64 is the lower-memory default; 96 and 128 trade memory and time for detail.

@@ -55,16 +55,21 @@ export async function submitPaint(id, claim, requestSha, toolCall, png) {
     "X-Studio-Paint-Sha256": createHash("sha256").update(png).digest("hex"),
   }, body: png });
 }
-export function submit(bytes, mime, key, publicCC0ToPixal = false) {
+export function submit(bytes, mime, key, publicCC0ToPixal = false, expectedPipeline) {
   if (!["image/png", "image/jpeg", "image/webp"].includes(mime))
     throw Error("Image must be PNG, JPEG, or WebP");
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(key || ""))
     throw Error(
       "A stable request key of 1–128 letters, digits, dot, underscore, colon or hyphen is required",
     );
+  if (expectedPipeline !== undefined && (
+    !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(expectedPipeline) ||
+    (publicCC0ToPixal === true && expectedPipeline !== "pixal3d-space-v1")
+  )) throw Error("Invalid or conflicting expected pipeline");
   return json("/api/jobs", {
     method: "POST",
     headers: { "Content-Type": mime, "Idempotency-Key": key,
+      ...(expectedPipeline === undefined ? {} : { "X-Studio-Pipeline": expectedPipeline }),
       ...(publicCC0ToPixal === true ? {
         "X-Studio-Pipeline": "pixal3d-space-v1",
         "X-Studio-CC0-Source": createHash("sha256").update(bytes).digest("hex"),
