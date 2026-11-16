@@ -4,8 +4,8 @@ import time
 import unittest
 from pathlib import Path
 from studio.core import JobCore, JobError, PipelineConflict
-from studio.configure import configure
-from engine.pipeline import PIPELINE, SHAPE_PIPELINE
+from studio.configure import configure, read_pipeline
+from engine.pipeline import GUIDED_PIPELINE, PIPELINE, SHAPE_PIPELINE
 
 
 class CoreTests(unittest.TestCase):
@@ -58,6 +58,34 @@ class CoreTests(unittest.TestCase):
         self.core._validate_image = lambda data: None
         self.assertEqual(self.core.get(second["id"])["status"], "interrupted")
         self.assertTrue(self.core.events(second["id"], 0))
+
+    def test_guided_storage_requires_explicit_consent_and_local_selection_revokes_it(self):
+        import json
+        directory = self.root / "new-store"
+        with self.assertRaises(ValueError):
+            configure(directory, "triposg-guided")
+        self.assertEqual(read_pipeline(directory), PIPELINE)
+        configure(directory, "triposg-guided", allow_send_to_openai=True)
+        self.assertEqual(read_pipeline(directory), GUIDED_PIPELINE)
+        config_file = directory / "engine.json"
+        self.assertIn("agreement", json.loads(config_file.read_text()))
+        configure(directory, "triposg")
+        self.assertNotIn("agreement", json.loads(config_file.read_text()))
+        self.assertEqual(read_pipeline(directory), SHAPE_PIPELINE)
+
+    def test_chatgpt_observation_requires_its_own_setup_and_persists(self):
+        from engine.pipeline import OBSERVED_PIPELINE
+        directory = self.root / "observed-store"
+        for opt, transfer in [(True,False),(False,True),(False,False)]:
+            with self.assertRaises(ValueError):
+                configure(directory,"triposg-observed",chatgpt_photo_analysis=opt,allow_send_to_openai=transfer)
+        with self.assertRaises(ValueError):
+            configure(directory,"triposg-guided",chatgpt_photo_analysis=True,allow_send_to_openai=True)
+        self.assertEqual(read_pipeline(directory), PIPELINE)
+        configure(directory,"triposg-observed",chatgpt_photo_analysis=True,allow_send_to_openai=True)
+        self.assertEqual(read_pipeline(directory), OBSERVED_PIPELINE)
+        configure(directory,"triposg")
+        self.assertEqual(read_pipeline(directory), SHAPE_PIPELINE)
 
     def test_shape_selection_survives_restart_and_old_requests_remain_idempotent(self):
         old, _ = self.core.create(b"one", "old-key", PIPELINE)
@@ -151,7 +179,7 @@ raise SystemExit(1)
                 (out / "manifest.json").write_text(json.dumps({"sha256":digest, "files":["view.png"], "offlinePreviewVerified":True}))
                 return ""
             if stage == "appearance":
-                self.assertEqual(cmd[-3:], [str(out / "input-processed.png"), str(out), digest])
+                self.assertEqual(cmd[-5:], [str(out / "input-processed.png"), str(out), digest, "--observed-view", "front"])
                 return json.dumps({"sha256":digest, "status":"needs_review"})
             self.fail("Shape generation repeated.")
         self.core._command = verify

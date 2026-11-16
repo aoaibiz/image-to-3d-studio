@@ -1,17 +1,50 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { readFile } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
+import { readFile, mkdtemp, writeFile, unlink, rmdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 const id = "12345678-1234-4123-8123-123456789abc";
+const continuityId = "12345678-1234-4123-8123-123456789abd";
+const continuityPayloads = {
+  "continuity-paint.json": Buffer.from('{"fixture":true}'),
+  "continuity-native.glb": Buffer.from("transport fixture"),
+};
 const image = await readFile(
   new URL("../demo/product-cutout.png", import.meta.url),
 );
-let received, inspected;
+const hostDir = await mkdtemp(join(tmpdir(), "studio-test-"));
+const tokenFile = join(hostDir, "host-access.token");
+await writeFile(tokenFile, "t".repeat(43), {mode:0o600});
+let received, inspected, returnedPaint;
 const service = http.createServer(async (req, res) => {
   assert.equal(req.headers["x-studio-client"], "1");
+  if (req.url === `/api/jobs/${continuityId}`)
+    return res.end(JSON.stringify({job: {id: continuityId, status: "needs_review", artifacts: Object.keys(continuityPayloads),
+      local_continuity: {external_image_generations: 0, report: "continuity-paint.json"}}}));
+  for (const [name, bytes] of Object.entries(continuityPayloads)) {
+    if (req.url === `/api/jobs/${continuityId}/artifacts/${name}`) return res.end(bytes);
+  }
+  if (req.method === "POST" && req.url === `/api/jobs/${id}/host/claim`) {
+    assert.equal(req.headers["x-studio-host-token"], "t".repeat(43));
+    return res.end(JSON.stringify({ job_id:id, generate_once:true, claim_id:"c".repeat(43), request_sha256:"a".repeat(64) }));
+  }
+  if (req.method === "POST" && req.url === `/api/jobs/${id}/host/submit`) {
+    assert.equal(req.headers["x-studio-host-token"], "t".repeat(43));
+    assert.equal(req.headers["x-studio-tool-call"], "fixture-call-id");
+    assert.equal(req.headers["x-studio-claim"], "c".repeat(43));
+    assert.equal(req.headers["x-studio-request-sha256"], "a".repeat(64));
+    const parts = [];
+    for await (const chunk of req) parts.push(chunk);
+    returnedPaint = Buffer.concat(parts);
+    assert.equal(req.headers["x-studio-paint-sha256"], createHash("sha256").update(returnedPaint).digest("hex"));
+    return res.end(JSON.stringify({job:{id,status:"queued"}}));
+  }
   if (req.method === "POST" && req.url === "/api/jobs") {
     const chunks = [];
     for await (const c of req) chunks.push(c);
@@ -44,7 +77,7 @@ await new Promise((resolve, reject) =>
 );
 const transport = new StdioClientTransport({
   command: process.execPath,
-  env: { ...process.env, STUDIO_PORT: String(service.address().port) },
+  env: { ...process.env, STUDIO_PORT: String(service.address().port), STUDIO_HOST_TOKEN_FILE:tokenFile },
   args: [
     new URL("./mcp.mjs", import.meta.url).pathname.replace(
       /^\/(?=[A-Za-z]:)/,
@@ -55,6 +88,36 @@ const transport = new StdioClientTransport({
 const client = new Client({ name: "integration-test", version: "1.0.0" });
 try {
   await client.connect(transport);
+  await test("CLI and MCP preserve the sealed local paint status and exact artifact bytes", async () => {
+    const cli = (...args) => promisify(execFile)(process.execPath, ["cli.mjs", ...args], {
+      cwd: import.meta.dirname, env: {...process.env, STUDIO_PORT: String(service.address().port)},
+    });
+    const status = JSON.parse((await cli("status", continuityId)).stdout).job;
+    const mcpStatus = await client.callTool({name: "status", arguments: {jobId: continuityId}});
+    assert.deepEqual(JSON.parse(mcpStatus.content[0].text).job, status);
+    assert.equal(status.local_continuity.external_image_generations, 0);
+    for (const [filename, bytes] of Object.entries(continuityPayloads)) {
+      const dest = join(hostDir, filename);
+      try {
+        await cli("export", continuityId, filename, dest);
+        assert.deepEqual(await readFile(dest), bytes);
+        const part = await client.callTool({name: "artifact_chunk", arguments: {jobId: continuityId, filename, offset: 0, limit: 128}});
+        assert.deepEqual(Buffer.from(JSON.parse(part.content[0].text).data, "base64"), bytes);
+      } finally {
+        await unlink(dest).catch(error => { if (error.code !== "ENOENT") throw error; });
+      }
+    }
+  });
+  await test("host stdio adapter preserves claim, binding and exact returned PNG", async () => {
+    const got = await client.callTool({name:"claim_paint",arguments:{jobId:id}});
+    const claim = JSON.parse(got.content[0].text);
+    assert.equal(claim.generate_once, true);
+    const args = {jobId:id,claimId:claim.claim_id,requestSha256:claim.request_sha256,toolCallId:"fixture-call-id",pngBase64:image.toString("base64")};
+    const put = await client.callTool({name:"submit_paint",arguments:args});
+    assert.equal(JSON.parse(put.content[0].text).job.id, id);
+    assert.deepEqual(returnedPaint,image);
+    assert.equal((await client.callTool({name:"submit_paint",arguments:{...args,pngBase64:"???"}})).isError,true);
+  });
   await test("official MCP SDK stdio submits exact saved image, waits on SSE, and reads chunks", async () => {
     const tools = await client.listTools();
     assert(tools.tools.some((x) => x.name === "generate"));
@@ -106,4 +169,6 @@ try {
 } finally {
   await client.close();
   await new Promise((r) => service.close(r));
+  await unlink(tokenFile);
+  await rmdir(hostDir);
 }

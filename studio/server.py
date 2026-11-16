@@ -1,6 +1,7 @@
 """Loopback-only HTTP transport for the studio job core."""
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import os
@@ -13,7 +14,9 @@ import sys
 from urllib.parse import urlsplit, parse_qs
 from .core import JobCore, JobError, PipelineConflict, MAX_INPUT, ROOT, TERMINAL
 from tools.doctor import executable_file, runtime_python, runtime_validator
-from engine.pipeline import SHAPE_PIPELINE
+from engine.pipeline import (GUIDED_PIPELINE, GUIDED_PIPELINES, HOST_PIPELINE, OBSERVATION_METHODS,
+                             OBSERVED_PIPELINE, PIXAL_PIPELINE, PIXAL_RECIPIENT, SPACE_PIPELINES, SF3D_OBSERVED_PIPELINE, SG_CHART_PIPELINE,
+                             SHAPE_PIPELINE, SHAPE_PIPELINES)
 
 STATIC = {
     "/": "viewer/index.html",
@@ -117,6 +120,31 @@ def shape_doctor(core):
     return result
 
 
+def space_engine_info(pipeline):
+    if pipeline == PIXAL_PIPELINE:
+        return {"pipeline": pipeline, "local": False, "recipient": PIXAL_RECIPIENT, "public_cc0_only": True}
+
+    info = {"pipeline": pipeline, "local": False}
+    if pipeline == SF3D_OBSERVED_PIPELINE:
+        return {**info, "recipients": ["Stability AI / Hugging Face", "OpenAI ChatGPT"]}
+    return {**info, "recipient": "Stability AI / Hugging Face"}
+
+
+def add_codex_checks(result, *, observation):
+    from engine.guided_provider import preflight
+    paint = preflight()
+    result["diagnostics"]["guided_paint"] = paint
+    if not paint.get("available"):
+        result.update(ok=False, message=paint.get("reason") or "Codexの画像生成環境を確認してください。")
+    if observation:
+        from engine.codex_photo_observations import preflight as observer_preflight
+        photo = {**observer_preflight(), "method": OBSERVATION_METHODS[-1],
+                 "recoverable_methods": list(OBSERVATION_METHODS)}
+        result["diagnostics"]["photo_observer"] = photo
+        if not photo.get("available"):
+            result.update(ok=False, message=photo.get("reason") or "元写真を解析するCodexの環境を確認してください。")
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -169,22 +197,64 @@ class Handler(BaseHTTPRequestHandler):
             self.send_bytes(204, b"", "image/x-icon")
             return
         if path == "/api/engine":
-            self.send_json(200, {"pipeline": self.server.core.pipeline, "local": True})
+            pipeline = self.server.core.pipeline
+            if pipeline in SPACE_PIPELINES:
+                self.send_json(200, space_engine_info(pipeline))
+                return
+            self.send_json(200, {"pipeline": pipeline, "local": pipeline not in GUIDED_PIPELINES,
+                                 **({"recipient": "OpenAI ChatGPT"} if pipeline in GUIDED_PIPELINES else {}),
+                                 **({"shape": "local TripoSG", "paint_guide_recipes": ["source-anchored-surface-chart"],
+                                     "max_photo_observations_per_job": 1, "max_image_generations_per_job": 1}
+                                    if pipeline == SG_CHART_PIPELINE else {})})
             return
         if path == "/api/doctor":
-            if self.server.core.pipeline == SHAPE_PIPELINE:
-                self.send_json(200, shape_doctor(self.server.core))
-                return
             root = self.server.core.root
             runtime = root / ".runtime"
             checks = {
                 "python": executable_file(runtime_python(runtime)),
-                "model": (runtime / "model/model.ckpt").is_file(),
                 "foreground_model": (runtime / "u2net/u2net.onnx").is_file(),
                 "validator": executable_file(runtime_validator(runtime)),
                 "node": bool(shutil.which("node")),
                 "viewer": (root / "viewer/node_modules/three/build/three.module.js").is_file(),
             }
+            if self.server.core.pipeline in SPACE_PIPELINES:
+                result = {**space_engine_info(self.server.core.pipeline), "ok": all(checks.values()), "checks": checks,
+                          "diagnostics": {"remote_availability": "未確認。実行時に公式Spaceの混雑・匿名利用枠を確認します。"}}
+                if self.server.core.pipeline == PIXAL_PIPELINE:
+                    result["diagnostics"]["remote_availability"] = "個人Spaceの稼働状況は送信前に確認します。匿名GPUの残り時間は未確認です。"
+                if self.server.core.pipeline == SF3D_OBSERVED_PIPELINE:
+                    add_codex_checks(result, observation=True)
+                self.send_json(200, result)
+                return
+            if self.server.core.pipeline in SHAPE_PIPELINES:
+                result = shape_doctor(self.server.core)
+                if self.server.core.pipeline in (GUIDED_PIPELINE, HOST_PIPELINE):
+                    from engine.guided_shape_job import vision_runtime_path
+                    from engine.visual_brief_setup import ASSETS, EXECUTABLE, PROJECTOR, WEIGHTS
+                    try:
+                        vision = vision_runtime_path()
+                        present = (vision / "bin" / EXECUTABLE).is_file() and all(
+                            (vision / name).stat().st_size == ASSETS[name][0]
+                            for name in (WEIGHTS, PROJECTOR)
+                        )
+                    except (OSError, ValueError):
+                        present = False
+                    result["diagnostics"]["local_visual_analysis"] = {
+                        "model": "Qwen3-VL-2B-Instruct", "files_present": present,
+                        "integrity": "verified before inference",
+                    }
+                    if not present:
+                        result.update(ok=False, message="ローカル画像解析の初期設定を実行してください。")
+                if self.server.core.pipeline == HOST_PIPELINE:
+                    result.update(pipeline=HOST_PIPELINE, local=False, recipient="OpenAI ChatGPT")
+                    result["diagnostics"]["guided_paint"] = {"provider": "Codex host / OpenAI ImageGen",
+                                                             "host_image_tool": "unverified until a connected host returns a generated image"}
+                if self.server.core.pipeline in (GUIDED_PIPELINE, OBSERVED_PIPELINE, SG_CHART_PIPELINE):
+                    result.update(pipeline=self.server.core.pipeline, local=False, recipient="OpenAI ChatGPT")
+                    add_codex_checks(result, observation=self.server.core.pipeline in (OBSERVED_PIPELINE, SG_CHART_PIPELINE))
+                self.send_json(200, result)
+                return
+            checks["model"] = (runtime / "model/model.ckpt").is_file()
             core = self.server.core
             weight_key = []
             for relative in (
@@ -312,13 +382,33 @@ class Handler(BaseHTTPRequestHandler):
                 if not value.isdigit():
                     self.send_json(400, {"error": "イベント位置を確認してください。"})
                     return
-                self.sse(job_id, int(value))
+                self.sse(job_id, int(value), stop_for_host=self.headers.get("X-Studio-Yield-Host") == "1")
                 return
             if filename:
                 if filename not in job["artifacts"]:
                     self.send_json(404, {"error": "成果物がありません。"})
                     return
                 file = self.server.core.directory / job_id / "output" / filename
+                if filename in job.get("shape_hypothesis_files", {}):
+                    data = file.read_bytes()
+                    if hashlib.sha256(data).hexdigest() != job["shape_hypothesis_files"][filename]:
+                        self.send_json(404, {"error": "形状の検品記録とファイルが一致しません。"})
+                        return
+                    self.send_bytes(200, data, mimetypes.guess_type(filename)[0] or "application/octet-stream")
+                    return
+                if job["status"] == "review_hold":
+                    hold = job["hold"]
+                    if filename == "review-hold.json":
+                        self.send_json(200, hold)
+                        return
+                    expected = hold["preview_sha256"] if filename == "review-native.glb" else hold["image_sha256"]
+                    with file.open("rb") as stream:
+                        data = stream.read((49 << 20) + 1)
+                    if len(data) > (49 << 20) or hashlib.sha256(data).hexdigest() != expected:
+                        self.send_json(404, {"error": "検品用データの照合に失敗しました。"})
+                        return
+                    self.send_bytes(200, data, "model/gltf-binary" if filename.endswith(".glb") else "image/png")
+                    return
                 self.send_bytes(
                     200,
                     file.read_bytes(),
@@ -329,7 +419,8 @@ class Handler(BaseHTTPRequestHandler):
         except KeyError:
             self.send_json(404, {"error": "ジョブがありません。"})
 
-    def sse(self, job_id, cursor):
+    def sse(self, job_id, cursor, *, stop_for_host=False):
+        stop = TERMINAL | ({"awaiting_host_image"} if stop_for_host else set())
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -341,7 +432,7 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.core.changed:
                     events = self.server.core.events(job_id, cursor)
                     status = self.server.core.get(job_id)["status"]
-                    if not events and status not in TERMINAL:
+                    if not events and status not in stop:
                         self.server.core.changed.wait(timeout=15)
                         events = self.server.core.events(job_id, cursor)
                         status = self.server.core.get(job_id)["status"]
@@ -359,7 +450,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not events:
                     self.wfile.write(b": keepalive\n\n")
                 self.wfile.flush()
-                if status in TERMINAL:
+                if status in stop:
                     return
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
@@ -368,20 +459,42 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized(write=True):
             return
         path = urlsplit(self.path).path
+        host_action = re.fullmatch(r"/api/jobs/([0-9a-f-]{36})/host/(claim|submit)", path)
+        host_token = self.headers.get("X-Studio-Host-Token")
+        if host_action:
+            from engine.host_paint import authorize
+            if not authorize(self.server.core.directory, host_token):
+                self.close_connection = True
+                self.send_json(403, {"error": "この端末のホスト送信設定を確認してください。"})
+                return
         length = self.headers.get("Content-Length", "")
         if not length.isdigit() or int(length) > MAX_INPUT:
             self.close_connection = True
             self.send_json(413, {"error": "画像は20MB以下で選び直してください。"})
             return
-        if path != "/api/jobs" and int(length) > 65536:
+        if path != "/api/jobs" and not (host_action and host_action[2] == "submit") and int(length) > 65536:
             self.close_connection = True
             self.send_json(413, {"error": "入力は64KB以下にしてください。"})
             return
         data = self.rfile.read(int(length))
         try:
+            if host_action:
+                submission = None
+                if host_action[2] == "submit":
+                    if self.headers.get("Content-Type") != "image/png":
+                        raise JobError("画像生成ツールのPNGを指定してください。")
+                    submission = dict(claim_id=self.headers.get("X-Studio-Claim"),
+                                      request_sha=self.headers.get("X-Studio-Request-Sha256"),
+                                      sheet_sha=self.headers.get("X-Studio-Paint-Sha256"),
+                                      tool_call=self.headers.get("X-Studio-Tool-Call"), png=data)
+                elif data:
+                    raise JobError("受付に追加の入力は必要ありません。")
+                self.send_json(200, self.server.core.host_transfer(host_action[1], host_token, submission))
+                return
             if path == "/api/jobs":
                 job, created = self.server.core.create(
-                    data, self.headers.get("Idempotency-Key"), self.headers.get("X-Studio-Pipeline")
+                    data, self.headers.get("Idempotency-Key"), self.headers.get("X-Studio-Pipeline"),
+                    self.headers.get("X-Studio-CC0-Source")
                 )
                 self.send_json(201 if created else 200, {"job": job})
                 return
@@ -405,6 +518,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "ジョブがありません。"})
         except PipelineConflict as exc:
             self.send_json(409, {"error": str(exc)})
+        except PermissionError as exc:
+            self.send_json(403, {"error": str(exc)})
         except JobError as exc:
             self.send_json(400, {"error": str(exc)})
 

@@ -17,7 +17,19 @@
     #viewport { height: 65vh; min-height: 320px; touch-action: none; }
     canvas { display: block; width: 100%; height: 100%; }
     #status { padding: 8px 18px; overflow-wrap: anywhere; }
+    #hash { min-width: 0; overflow-wrap: anywhere; }
     small { color: #54645a; }
+    @media (max-width: 600px) {
+      body { display: flex; flex-direction: column; }
+      body > * { box-sizing: border-box; min-width: 0; max-width: 100%; }
+      header, #studio-app, .inspection-title { order: -2; }
+      body.studio > section, #studio-app, .inspection-title, #status { width: 100%; }
+      .studio:has(#download:not([hidden])) #studio-app { order: 1; }
+      #viewport { order: -1; width: 100%; height: 65vh; height: 65svh; min-height: 0; }
+      section { gap: 6px; padding: 7px 12px; }
+      section label, section input, .studio .pick { min-width: 0; max-width: 100%; box-sizing: border-box; }
+      #hash { font-size: 12px; }
+    }
   </style>
 </head>
 <body>

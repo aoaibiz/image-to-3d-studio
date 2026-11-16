@@ -1,11 +1,38 @@
-param([string]$CachedWeights = '', [switch]$TripoSG)
+param([string]$CachedWeights = '', [switch]$TripoSG, [switch]$SendPhotoAndGuidesToOpenAI, [switch]$UseCodexHost, [switch]$ChatGPTPhotoAnalysis, [switch]$AllowOfficialSpace, [switch]$SourceSurfaceChart)
+if ($SourceSurfaceChart -and (!$ChatGPTPhotoAnalysis -or !$SendPhotoAndGuidesToOpenAI -or $AllowOfficialSpace -or $UseCodexHost)) {
+  throw 'For local TripoSG with a surface chart, enable -ChatGPTPhotoAnalysis -SendPhotoAndGuidesToOpenAI -SourceSurfaceChart together.'
+}
+if ($AllowOfficialSpace -and ($TripoSG -or $UseCodexHost -or ([bool]$SendPhotoAndGuidesToOpenAI -ne [bool]$ChatGPTPhotoAnalysis))) {
+  throw 'For SF3D with ChatGPT analysis and paint, use -AllowOfficialSpace -ChatGPTPhotoAnalysis -SendPhotoAndGuidesToOpenAI together.'
+}
+if ($AllowOfficialSpace) {
+  Write-Host 'The selected foreground photo is sent to the official Stability AI Hugging Face Space using your anonymous ZeroGPU allowance for evaluation. Check the provider terms for your intended use.'
+}
+if ($ChatGPTPhotoAnalysis -and (!$SendPhotoAndGuidesToOpenAI -or $UseCodexHost)) {
+  throw 'Use -ChatGPTPhotoAnalysis with -SendPhotoAndGuidesToOpenAI for the ChatGPT CLI observation and paint pipeline. -UseCodexHost selects a separate pipeline.'
+}
+if ($UseCodexHost -and !$SendPhotoAndGuidesToOpenAI) {
+  throw 'Use -UseCodexHost with -SendPhotoAndGuidesToOpenAI to enable photo transfer for the native host.'
+}
+if ($SendPhotoAndGuidesToOpenAI) {
+  if (!$AllowOfficialSpace) { $TripoSG = $true }
+  if ($SourceSurfaceChart) {
+    Write-Host 'Local TripoSG may send a photo and one source-anchored continuous surface chart to OpenAI for one paint request using your ChatGPT plan.'
+  } elseif ($AllowOfficialSpace) {
+    Write-Host 'Paint may send a photo and either two rendered geometry views or one source-anchored continuous surface chart to OpenAI for one paint request using your ChatGPT plan.'
+  } else {
+    Write-Host 'Guided paint sends a photo and two rendered views to OpenAI using your ChatGPT plan.'
+  }
+  Write-Host 'Check your remaining allowance and credit settings before enabling it. This preview cannot measure account charges.'
+  if ($ChatGPTPhotoAnalysis) { Write-Host 'Photo analysis also sends one metadata-stripped photo to OpenAI for a text observation. Each job permits one observation and one ImageGen request.' }
+}
 $savedEnv = @{}
 foreach ($name in @('npm_config_cache', 'npm_config_userconfig', 'npm_config_globalconfig')) { $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 try {
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 New-Item -ItemType Directory -Force .runtime, .runtime\validator, .runtime\npm-cache | Out-Null
-& (Join-Path $PSScriptRoot 'engine\setup.ps1') -CachedWeights $CachedWeights
+& (Join-Path $PSScriptRoot 'engine\setup.ps1') -CachedWeights $CachedWeights -SkipTripoSR:$AllowOfficialSpace
 if (!(Get-Command npm.cmd -ErrorAction SilentlyContinue)) { throw 'Node.js/npm required: https://nodejs.org/' }
 $env:npm_config_cache = Join-Path $PSScriptRoot '.runtime\npm-cache'
 $env:npm_config_userconfig = Join-Path $PSScriptRoot '.runtime\npm-user.npmrc'
@@ -30,6 +57,14 @@ if (!(Test-Path $zip) -or (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -
 }
 Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $PSScriptRoot '.runtime\validator') -Force
 if ((Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() -ne $exeHash) { throw 'Khronos validator executable hash mismatch' }
+if ($AllowOfficialSpace) {
+  $engineOptions = @('--engine', 'sf3d-official-preview', '--allow-official-space')
+  if ($ChatGPTPhotoAnalysis) {
+    $engineOptions = @('--engine', 'sf3d-observed', '--allow-official-space', '--chatgpt-photo-analysis', '--allow-send-to-openai')
+  }
+  & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -m studio.configure @engineOptions
+  if ($LASTEXITCODE) { throw 'Could not save SF3D photo and anonymous quota settings.' }
+}
 if ($TripoSG) {
   $shapeOptions = @{}
   if ($env:STUDIO_TRIPOSG_RUNTIME) {
@@ -37,7 +72,20 @@ if ($TripoSG) {
     if ($LASTEXITCODE) { throw 'Use an absolute STUDIO_TRIPOSG_RUNTIME path.' }
   }
   & (Join-Path $PSScriptRoot 'engine\setup-triposg.ps1') @shapeOptions
-  & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -m studio.configure --engine triposg
+  $engineOptions = @('--engine', 'triposg')
+  if ($SourceSurfaceChart) {
+    $engineOptions = @('--engine', 'triposg-chart', '--chatgpt-photo-analysis', '--allow-send-to-openai')
+  } elseif ($ChatGPTPhotoAnalysis) {
+    $engineOptions = @('--engine', 'triposg-observed', '--chatgpt-photo-analysis', '--allow-send-to-openai')
+  } elseif ($SendPhotoAndGuidesToOpenAI) {
+    $visionRoot = & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -c 'from engine.guided_shape_job import vision_runtime_path; print(vision_runtime_path())'
+    if ($LASTEXITCODE) { throw 'Use an absolute STUDIO_VISUAL_BRIEF_RUNTIME path.' }
+    & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -m engine.visual_brief_setup $visionRoot
+    if ($LASTEXITCODE) { throw 'Local visual analysis setup failed. Run the same setup again to resume.' }
+    $guidedEngine = if ($UseCodexHost) { 'triposg-guided-host' } else { 'triposg-guided' }
+    $engineOptions = @('--engine', $guidedEngine, '--allow-send-to-openai')
+  }
+  & (Join-Path $PSScriptRoot '.runtime\venv\Scripts\python.exe') -m studio.configure @engineOptions
   if ($LASTEXITCODE) { throw 'Could not select the TripoSG engine for this Studio checkout.' }
 }
 Write-Host 'Setup complete. Start: .\.runtime\venv\Scripts\python.exe -m studio.server'

@@ -33,3 +33,7 @@ body.studio { background: #f3f4f0; color: #1b2924; }
   .studio #viewport { height: 42vh; }
   .studio .inspection-title { padding: 0 12px; }
 }
+.studio.hold-no-preview section, .studio.hold-no-preview #viewport, .studio.hold-no-preview #status { visibility: hidden; }
+.studio.review-held section label:has(#file) { display: none; }
+.studio.shape-alternative section label:has(#file) { display: none; }
+.studio .shape-variant:not([hidden]) { display: block; order: -2; box-sizing: border-box; width: 100%; max-width: 1080px; margin: 0 auto 8px; padding: 4px 12px; }

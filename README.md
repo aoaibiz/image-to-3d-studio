@@ -26,6 +26,51 @@
 
 自動生成後に手作業で接合部を調整したい場合は、別途、部位と寸法を指定したレシピから滑らかな面を出力できます。塗装の検査では、意図した色とテクスチャ上の領域を指定し、小さな異色のかたまりを探せます。どちらも任意のローカル CLI です。[造形レシピ](engine/CAST.md)・[塗装検査](quality/PAINT.md)
 
+## 写真から背面の塗装を推定する（プレビュー）
+
+この機能は[開発中のPR #2](https://github.com/aoaibiz/image-to-3d-studio/pull/2)にあります。試すときは専用フォルダーに `git clone --branch improve/unseen-paint https://github.com/aoaibiz/image-to-3d-studio.git` で取得してください。公開リリース `v0.4.0-preview.1` の塗装例と、開発版で新しく生成した結果は、[検証記録](VERIFICATION.md)で比較できます。
+
+### 公式Stable Fast 3DとChatGPTを使う
+
+ローカルGPUを使わずに試す場合の初回設定です。Codex CLIに本人のChatGPTアカウントでログインしてから実行します。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -AllowOfficialSpace -ChatGPTPhotoAnalysis -SendPhotoAndGuidesToOpenAI
+.\.runtime\venv\Scripts\python.exe -m studio.server
+```
+
+写真を1枚貼って生成を押すと、切り抜いた対象をStability AIの公式Hugging Face Spaceに送り、テクスチャ付きの立体を1回生成します。OpenAIにはメタデータを除いた写真を送り、色・模様・部品を1回読み取ります。塗り足す場合だけ、写真と同じ立体から描いたガイドをOpenAIに送り、塗装案を最大1回作ります。元の材質を残す場合にも、撮影側との一致と反対側への模様の複製を検査します。初期診断では写真を送信しません。利用できる枠・待ち時間は各サービスに依存します。[送信内容とモデルの利用条件](engine/SF3D.md)
+
+同じジョブに、入力、生成元のGLB、仕上げたGLB、編集用glTF、工程の記録を保存します。見た目はビューアーで確認できます。生成モデルが推定した見えない面と、入力写真で確認できる面は区別して評価してください。
+
+写真に同じ模様が何度も写り、立体の輪郭に沿って測った間隔と写真の間隔が合う場合は、手元でその続きを描けます。この場合の外部塗装依頼は0回です。正面に一つだけある顔やロゴを繰り返す根拠には使いません。推定した画像を貼る場合は、滑らかにつながった面の上に、元の絵にも塗装案にもなかった線が現れていないかを複数の方向から調べます。切れ目が見つかると、その塗装の書き出しを保留します。検査を通った後も、元写真との一致と、横や後ろの自然さをビューアーで確認できます。
+
+写真に張り出した口縁が見え、立体の上面が平らに塞がり、内壁を作る余地がある場合は、同じジョブに内側を推定した別案も保存できます。写真の解析・形状計測が条件を満たしたときだけ、結果画面に別案を回すリンクが現れます。元のモデルと別案はそれぞれGLBで保存できます。口径・深さは推定で、追加の外部生成は使いません。
+
+### ローカルTripoSGとChatGPTを使う
+
+横と背面を一続きの展開図で推定する開発版を使う場合の初回設定です。
+
+```powershell
+.\setup.ps1 -TripoSG -SourceSurfaceChart -ChatGPTPhotoAnalysis -SendPhotoAndGuidesToOpenAI
+.\.runtime\venv\Scripts\python.exe -m studio.server
+```
+
+形状はPCで生成します。初回に指定した本人のChatGPT契約で、OpenAIに写真1枚を送り、配色と模様を読み取ります。追加の塗装が適する場合だけ、写真と、両端に実写部分を残した展開図を1回送ります。撮影側と推定側がつながるかを検査し、根拠が不足する場合は、その理由と検品用のモデルを表示します。背面に実際に何が描かれていたかは、別角度の実写資料で確認できます。
+
+Windows で次の初期設定を1回行うと、写真を貼るだけで、Codex が色、繰り返し模様、正面にある部品と、反対面で役割が変わる可能性を読み取ります。本人の ChatGPT 利用枠で、写真の解析を1回、立体から作ったガイドを使った塗装の生成を1回依頼します。送信先は OpenAI、送信内容はメタデータを除いた元写真と立体の確認画像です。模様の指示は不要です。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -SendPhotoAndGuidesToOpenAI -ChatGPTPhotoAnalysis
+.\.runtime\venv\Scripts\python.exe -m studio.server
+```
+
+Web 画面だけでこの構成を使うには、画像生成を利用できる Codex CLI に ChatGPT でログインしてください。写真の解析をローカルの Qwen で行う場合は `-ChatGPTPhotoAnalysis` を省きます。Codex 内蔵の画像生成を使う場合は、同フラグを `-UseCodexHost` に替えてください。短いインストール先（例 `C:\3d\studio`）を使うと、Windows のパス長制限による導入失敗を避けやすくなります。
+
+生成した裏面に正面特有の部品が重なる、または推定画像の輪郭・穴が形状に合わない場合は投影を止めます。GLB の外観は正面・側面・背面と無地表示で検品してください。無料のローカル構成、外部送信の解除、モデルの利用条件は各手順で確認できます。[写真解析](engine/VISUAL_BRIEF.md) ・ [TripoSG](engine/TRIPOSG.md) ・ [クライアント設定](clients/README.md)
+
+外部送信を解除するときは `.\.runtime\venv\Scripts\python.exe -m studio.configure --engine triposr` を実行し、Studio を再起動してください。
+
 ## 起動する
 
 Git、[uv](https://docs.astral.sh/uv/getting-started/installation/)、Node.js 22 と npm、WebGL 対応ブラウザーを用意します。初回に約 1.68 GB の重み、Python、依存ライブラリ、検品ツールをダウンロードします。重みと生成物を保存できる空き容量を確保してください。
@@ -107,3 +152,5 @@ node viewer/make-preview.cjs my-car.glb my-car-preview.html
 ```
 
 [エンジンの版・設定](engine/README.md)、[ビューアーと検品画像の生成方法](viewer/README.md)、[検証結果と限界](VERIFICATION.md) を参照してください。プロジェクトのコードは [MIT](LICENSE)、車の原画は [CC0](demo/README.md) です。モデルと依存ライブラリの条件は [THIRD_PARTY.md](THIRD_PARTY.md) に分けて記録しています。
+
+公開版の更新時は[ツールカタログの掲載ページ](https://mcp-tools-catalog.sparkling-poetry-53ca.workers.dev/tools/image-to-3d-studio)にも、導入先・実際に配布したバージョン・利用できるMCPツールを反映してください。検証中の変更にはドラフトPRへのリンクを使います。

@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { json, submit, watch, jobPath, artifactChunk } from "./service.mjs";
+import { json, submit, watch, jobPath, artifactChunk, claimPaint, submitPaint } from "./service.mjs";
 const server = new McpServer({ name: "image-to-3d-studio", version: "1.0.0" });
 const id = z.string().uuid();
 const result = (value) => ({
@@ -29,12 +29,13 @@ register(
   "generate",
   "Submit base64 image bytes with a stable request key. Reusing the key is idempotent.",
   {
+    publicCC0ToPixal: z.literal(true).optional().describe("Attest this particular image is public CC0 and authorize sending it to the third-party Hugging Face Space victor/pixal3d-studio. Requires the Pixal demo configuration."),
     imageBase64: z.string(),
     mime: z.enum(["image/png", "image/jpeg", "image/webp"]),
     requestKey: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/),
     expectedPipeline: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/).optional().describe("Use the pipeline returned by engine so a configuration change cannot silently change the recipient."),
   },
-  ({ imageBase64, mime, requestKey, expectedPipeline }) => {
+  ({ imageBase64, mime, requestKey, publicCC0ToPixal, expectedPipeline }) => {
     if (imageBase64.length > Math.ceil((20 * 1024 * 1024) / 3) * 4)
       throw Error("画像は20MB以下で選び直してください。");
     const bytes = Buffer.from(imageBase64, "base64");
@@ -44,12 +45,22 @@ register(
       bytes.toString("base64") !== imageBase64
     )
       throw Error("画像のBase64形式を確認してください。");
-    return submit(bytes, mime, requestKey, expectedPipeline);
+    return submit(bytes, mime, requestKey, publicCC0ToPixal, expectedPipeline);
   },
 );
 register("status", "Read job status.", { jobId: id }, ({ jobId }) =>
   json(jobPath(jobId)),
 );
+register("claim_paint", "Claim the fixed image instruction and two local paths for an explicitly configured host job. Only generate when generate_once is true.", { jobId: id }, ({ jobId }) => claimPaint(jobId));
+register("submit_paint", "Return the original PNG from the authorized native ImageGen tool. Repeating the same result is idempotent.", {
+  jobId: id, claimId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  requestSha256: z.string().regex(/^[0-9a-f]{64}$/), toolCallId: z.string().regex(/^[A-Za-z0-9_-]{1,160}$/),
+  pngBase64: z.string().min(4).max(Math.ceil(20971520 / 3) * 4),
+}, ({jobId, claimId, requestSha256, toolCallId, pngBase64}) => {
+  const bytes = Buffer.from(pngBase64, "base64");
+  if (bytes.toString("base64") !== pngBase64) throw Error("PNGのBase64形式を確認してください。");
+  return submitPaint(jobId, claimId, requestSha256, toolCallId, bytes);
+});
 register(
   "wait",
   "Wait for job completion through the event stream.",

@@ -292,9 +292,16 @@ if __name__ == "__main__":
     parser.add_argument("foreground", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("sha256")
+    parser.add_argument("--observed-view", choices=("front", "back"))
     args = parser.parse_args()
     try:
         result = assess_general(args.foreground, args.output, args.sha256)
+        if args.observed_view:
+            from reflected_paint import assess_reflected_paint
+
+            result["opposite_paint"] = assess_reflected_paint(
+                args.output / "model.glb", args.output, args.observed_view, args.foreground
+            )
     except OSError as error:
         parser.exit(1, f"Unable to read or write appearance evidence: {error}\n")
     print(json.dumps(result, ensure_ascii=True))

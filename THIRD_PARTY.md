@@ -1,8 +1,16 @@
 # Third-party components and model provenance
 
+The diagnostic comparison of *Chasse with Christ in Majesty and the Lamb of God*, accession 17.190.523, includes two CC0 photographs from The Metropolitan Museum of Art and views rendered from the Studio trial. Only the three-quarter photograph was used for generation. [Museum collection record](https://www.metmuseum.org/art/collection/search/464494) · [Open Access policy](https://www.metmuseum.org/about-the-met/policies-and-documents/open-access)
+
+The optional Pixal3D adapter sends a published CC0 photograph to a community-operated inference service. TencentARC publishes Pixal3D under MIT and documents separate third-party components. Studio distributes its client code. Operators of a self-hosted installation must also check the terms for its weights and components. [Upstream source and license](https://github.com/TencentARC/Pixal3D) · [Upstream notices](https://github.com/TencentARC/Pixal3D/blob/master/NOTICE) · [Space operator and transfer details](engine/PIXAL3D.md)
+
 任意の CPU 形状エンジン TripoSG のコード、重み、同梱モジュールの個別条件、取得元・固定リビジョンは [TripoSG の第三者条件](engine/TRIPOSG.md#第三者の利用条件) に記載しています。これらの資材は各利用者の専用環境に取得します。
 
 Inventory checked 2026-11-15 against the repository's setup and dependency declarations and the upstream sources linked below. This is an inventory, not a complete bill of materials or a replacement for the license texts required when distributing binaries. Dependencies and downloaded weights are runtime artifacts, not original project assets.
+
+The optional local photograph reader downloads Qwen3-VL-2B-Instruct (Apache-2.0) and a pinned llama.cpp build (MIT). The ChatGPT observation and paint modes use the operator's Codex session and service terms. Model weights, account credentials, and service allowances are obtained separately by each operator. [Photo reader revisions and licenses](engine/VISUAL_BRIEF.md)
+
+The optional Stable Fast 3D route sends the foreground to Stability AI's official Hugging Face Space. This repository distributes its own client. Stability AI provides the remote model under the Stability AI Community License, with conditions on commercial use. Each operator uses their own service allowance and checks the terms for their use of generated assets. [Model card](https://huggingface.co/stabilityai/stable-fast-3d) · [Upstream license](https://github.com/Stability-AI/stable-fast-3d/blob/main/LICENSE.md) · [Transfer and provider protocol](engine/SF3D.md)
 
 ## Engine and model assets
 
