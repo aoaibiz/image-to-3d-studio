@@ -1,6 +1,10 @@
-const { chromium } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
+const checkoutBrowsers = path.resolve(__dirname, '../.runtime/browsers');
+if (process.platform !== 'win32' && !process.env.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync(checkoutBrowsers)) {
+  process.env.PLAYWRIGHT_BROWSERS_PATH = checkoutBrowsers;
+}
+const { chromium } = require('@playwright/test');
 const crypto = require('crypto');
 const { spawn, execFileSync } = require('child_process');
 const zlib = require('zlib');

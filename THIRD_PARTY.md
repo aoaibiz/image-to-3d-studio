@@ -39,7 +39,7 @@ Setup also uses [uv](https://github.com/astral-sh/uv) (MIT OR Apache-2.0) and do
 
 - [Three.js 0.180.0](https://github.com/mrdoob/three.js/tree/r180): viewer dependency; [MIT license](https://github.com/mrdoob/three.js/blob/r180/LICENSE).
 - [Playwright 1.56.1](https://github.com/microsoft/playwright/tree/v1.56.1): development/browser test tooling (`@playwright/test`); [Apache-2.0](https://github.com/microsoft/playwright/blob/v1.56.1/LICENSE). Browser binaries are separate distributions with their own terms.
-- [Khronos glTF Validator](https://github.com/KhronosGroup/glTF-Validator): optional externally supplied executable used by `quality/inspection.py`; [Apache-2.0](https://github.com/KhronosGroup/glTF-Validator/blob/main/LICENSE). No version is pinned in the repository; record the version and its bundled notices when used or redistributed.
+- The Windows setup verifies the pinned Khronos native release asset. The macOS/Linux setup installs the official JavaScript build `gltf-validator@2.0.0-dev.3.10` using the registry SHA-512 in `tools/validator/package-lock.json`. Both supply format reports to `quality/inspection.py`. [Khronos glTF Validator](https://github.com/KhronosGroup/glTF-Validator) · [Apache-2.0 license](https://github.com/KhronosGroup/glTF-Validator/blob/main/LICENSE)
 
 ## Outstanding distribution checks
 
