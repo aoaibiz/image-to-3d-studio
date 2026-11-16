@@ -1,4 +1,4 @@
-"""Windows Job Object that terminates the child tree if its owner exits."""
+"""Tie worker lifetimes to their Studio process on Windows and POSIX."""
 
 import ctypes
 from ctypes import wintypes
@@ -80,3 +80,31 @@ class ProcessGroup:
         if self.handle:
             self.kernel.CloseHandle(self.handle)
             self.handle = None
+
+
+def exec_posix_worker(command):
+    """Run in a new session; kill its group when Studio closes the lifetime pipe."""
+    import signal
+    import stat
+
+    if not command or os.getsid(0) != os.getpid() or not stat.S_ISFIFO(os.fstat(0).st_mode):
+        raise RuntimeError("Start this worker from Studio with a dedicated session and pipe")
+    if os.fork() == 0:
+        # Do not keep the output pipe open after the actual command exits.
+        os.close(1)
+        os.close(2)
+        try:
+            while os.read(0, 1):
+                pass
+        finally:
+            os.killpg(os.getpgrp(), signal.SIGKILL)
+            os._exit(1)
+    with open(os.devnull, "rb") as empty:
+        os.dup2(empty.fileno(), 0)
+    os.execvp(command[0], command)
+
+
+if __name__ == "__main__":
+    import sys
+
+    exec_posix_worker(sys.argv[1:])

@@ -12,6 +12,7 @@ import subprocess
 import sys
 from urllib.parse import urlsplit, parse_qs
 from .core import JobCore, JobError, PipelineConflict, MAX_INPUT, ROOT, TERMINAL
+from tools.doctor import executable_file, runtime_python, runtime_validator
 from engine.pipeline import SHAPE_PIPELINE
 
 STATIC = {
@@ -59,17 +60,19 @@ def shape_doctor(core):
         result["message"] = "STUDIO_TRIPOSG_RUNTIME には絶対パスを指定してください。"
         return result
     base = core.root / ".runtime"
-    python = base / "venv/Scripts/python.exe"
-    shape_python = runtime / "venv/Scripts/python.exe"
+    python = runtime_python(base)
+    shape_python = runtime_python(runtime)
     model_dir = runtime / "weights"
     foreground = base / "u2net/u2net.onnx"
     source = runtime / "source/triposg"
     resources = [model_dir / name for name in WEIGHTS]
-    checks.update(python=python.is_file(), shape_python=shape_python.is_file(),
+    checks.update(python=executable_file(python), shape_python=executable_file(shape_python),
                   shape_source=(source / "models/transformers/triposg_transformer.py").is_file(),
                   model=all(p.is_file() for p in resources), foreground_model=foreground.is_file(),
-                  validator=(base / "validator/gltf_validator.exe").is_file(), node=bool(shutil.which("node")),
+                  validator=executable_file(runtime_validator(base)), node=bool(shutil.which("node")),
                   viewer=(core.root / "viewer/node_modules/three/build/three.module.js").is_file())
+    if os.name != "nt":
+        result["message"] = "同梱の TripoSG セットアップは Windows x64 用です。macOS・Linux のローカル生成には TripoSR を設定してください。"
     if not all(checks.values()):
         return result
     # Cache successful multi-GB verification while the local files are unchanged.
@@ -172,15 +175,15 @@ class Handler(BaseHTTPRequestHandler):
             if self.server.core.pipeline == SHAPE_PIPELINE:
                 self.send_json(200, shape_doctor(self.server.core))
                 return
+            root = self.server.core.root
+            runtime = root / ".runtime"
             checks = {
-                "python": (ROOT / ".runtime/venv/Scripts/python.exe").is_file(),
-                "model": (ROOT / ".runtime/model/model.ckpt").is_file(),
-                "foreground_model": (ROOT / ".runtime/u2net/u2net.onnx").is_file(),
-                "validator": (ROOT / ".runtime/validator/gltf_validator.exe").is_file(),
+                "python": executable_file(runtime_python(runtime)),
+                "model": (runtime / "model/model.ckpt").is_file(),
+                "foreground_model": (runtime / "u2net/u2net.onnx").is_file(),
+                "validator": executable_file(runtime_validator(runtime)),
                 "node": bool(shutil.which("node")),
-                "viewer": (
-                    ROOT / "viewer/node_modules/three/build/three.module.js"
-                ).is_file(),
+                "viewer": (root / "viewer/node_modules/three/build/three.module.js").is_file(),
             }
             core = self.server.core
             weight_key = []
@@ -191,7 +194,7 @@ class Handler(BaseHTTPRequestHandler):
                 "u2net/u2net.onnx",
             ):
                 try:
-                    stat = (ROOT / ".runtime" / relative).stat()
+                    stat = (runtime / relative).stat()
                     weight_key.append((stat.st_size, stat.st_mtime_ns))
                 except OSError:
                     weight_key.append(None)
@@ -213,7 +216,7 @@ class Handler(BaseHTTPRequestHandler):
                     probe = subprocess.run(
                         [
                             sys.executable,
-                            str(ROOT / "tools" / "doctor.py"),
+                            "-X", "utf8", str(root / "tools" / "doctor.py"),
                             "--verify-weights",
                         ],
                         capture_output=True,
@@ -243,7 +246,7 @@ class Handler(BaseHTTPRequestHandler):
                     "architecture": platform.machine(),
                     "ram": local_memory(),
                     "graphics": gpu_inventory(),
-                    "disk_free_bytes": shutil.disk_usage(ROOT).free,
+                    "disk_free_bytes": shutil.disk_usage(root).free,
                     "local_cpu": {
                         "engine": "TripoSR",
                         "weight_verification": "unchecked",

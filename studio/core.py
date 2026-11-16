@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from .process_group import ProcessGroup
 from .configure import read_pipeline
+from tools.doctor import runtime_python, runtime_validator
 from engine.pipeline import LEGACY_PIPELINE, PIPELINE, SHAPE_PIPELINE
 import queue
 import re
@@ -17,7 +18,6 @@ import uuid
 ROOT = Path(__file__).resolve().parent.parent
 TERMINAL = {"needs_review", "failed", "cancelled", "interrupted"}
 MAX_INPUT = 20 * 1024 * 1024
-PYTHON = ROOT / ".runtime" / "venv" / "Scripts" / "python.exe"
 
 
 def now():
@@ -449,7 +449,8 @@ class JobCore:
         try:
             result = subprocess.run(
                 [
-                    str(self.root / ".runtime" / "venv" / "Scripts" / "python.exe"),
+                    str(runtime_python(self.root / ".runtime")),
+                    "-I",
                     "-c",
                     script,
                 ],
@@ -554,18 +555,21 @@ class JobCore:
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True
             )
         else:
-            import signal
-
-            os.killpg(proc.pid, signal.SIGKILL)
+            proc.stdin.close()
 
     def _command(self, job_id, command, stage):
         with self.lock:
             if self.get(job_id)["status"] != "running":
                 raise JobError("cancelled")
             self._update(job_id, "running", stage)
+            # A separate session isolates cancellation on POSIX. The supervisor's
+            # stdin is a lifetime pipe so a Studio crash also ends the job tree.
+            if os.name != "nt":
+                command = [sys.executable, "-I", str(Path(__file__).with_name("process_group.py")), *command]
             proc = subprocess.Popen(
                 command,
                 cwd=self.root,
+                stdin=subprocess.PIPE if os.name != "nt" else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -613,6 +617,8 @@ class JobCore:
         proc.stdout.close()
         code = proc.wait()
         with self.lock:
+            if proc.stdin is not None:
+                proc.stdin.close()
             self.process = None
             if self.get(job_id)["status"] != "running":
                 raise JobError("cancelled")
@@ -679,7 +685,7 @@ class JobCore:
         # A rerun creates new verification evidence; an earlier opinion must not be reused.
         (out / "review.json").unlink(missing_ok=True)
         (out / "semantic-inspection.json").unlink(missing_ok=True)
-        py = str(self.root / ".runtime" / "venv" / "Scripts" / "python.exe")
+        py = str(runtime_python(self.root / ".runtime"))
         glb = out / "model.glb"
         settings_path = out / "settings.json"
         config = self.get(job_id)["config"]
@@ -780,7 +786,7 @@ class JobCore:
         if config.get("auto_finish"):
             if not self._artifacts_valid(out, settings):
                 raise RuntimeError("artifact hash mismatch")
-        validator = self.root / ".runtime" / "validator" / "gltf_validator.exe"
+        validator = runtime_validator(self.root / ".runtime")
         cmd = [py, str(self.root / "quality" / "inspection.py"), str(glb)]
         from quality.measured_regions import measured_profile
 

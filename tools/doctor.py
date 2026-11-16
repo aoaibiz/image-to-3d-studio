@@ -8,6 +8,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,22 @@ if 'CPUExecutionProvider' not in onnxruntime.get_available_providers():
     raise SystemExit('ONNX Runtime CPU provider is missing')
 print(torch.__version__)
 """
+
+
+def runtime_python(runtime):
+    return runtime / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def runtime_validator(runtime):
+    return runtime / "validator" / ("gltf_validator.exe" if os.name == "nt" else "gltf_validator")
+
+
+def executable_file(path):
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def _local_output(command):
+    return subprocess.run(command, capture_output=True, check=True, text=True, timeout=15).stdout
 
 
 def local_memory():
@@ -50,27 +67,60 @@ def local_memory():
         state.length = ctypes.sizeof(state)
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(state)):
             return {"total_bytes": state.physical, "available_bytes": state.available}
+    if sys.platform.startswith("linux"):
+        try:
+            lines = Path("/proc/meminfo").read_text(encoding="ascii").splitlines()
+            fields = {line.split(":")[0]: int(line.split()[1]) * 1024 for line in lines
+                      if line.startswith(("MemTotal:", "MemAvailable:"))}
+            return {"total_bytes": fields["MemTotal"], "available_bytes": fields.get("MemAvailable")}
+        except (OSError, ValueError, KeyError, IndexError):
+            return None
+    if sys.platform == "darwin":
+        try:
+            total = int(_local_output(["/usr/sbin/sysctl", "-n", "hw.memsize"]))
+            return {"total_bytes": total, "available_bytes": None}
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
     return None
 
 
 def gpu_inventory():
-    if os.name != "nt":
-        return None
-    cmd = (
-        "Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM "
-        "| ConvertTo-Json -Compress"
-    )
     try:
-        result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-Command", cmd],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=15,
-        )
-        return json.loads(result.stdout)
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
+        if os.name == "nt":
+            cmd = ("Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM "
+                   "| ConvertTo-Json -Compress")
+            return json.loads(_local_output(["powershell.exe", "-NoProfile", "-Command", cmd]))
+        if sys.platform == "darwin":
+            displays = json.loads(_local_output(["/usr/sbin/system_profiler", "SPDisplaysDataType", "-json"]))
+            return [{"name": gpu.get("sppci_model") or gpu.get("_name"),
+                     "reported_memory": gpu.get("spdisplays_vram") or gpu.get("spdisplays_vram_shared")}
+                    for gpu in displays["SPDisplaysDataType"]]
+        if sys.platform.startswith("linux") and shutil.which("nvidia-smi"):
+            result = _local_output(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
+            gpus = []
+            for line in result.splitlines():
+                name, memory = line.rsplit(",", 1)
+                gpus.append({"name": name.strip(), "memory_bytes": int(memory.strip()) * 1024**2})
+            return gpus
+    except (OSError, KeyError, ValueError, subprocess.SubprocessError):
+        pass
+    if sys.platform.startswith("linux"):
+        gpus = []
+        for card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
+            if not card.name[4:].isdigit():
+                continue
+            device = card / "device"
+            try:
+                info = dict(line.split("=", 1) for line in (device / "uevent").read_text().splitlines()
+                            if "=" in line)
+                gpu = {"device": card.name, "driver": info.get("DRIVER"), "pci_id": info.get("PCI_ID")}
+                vram = device / "mem_info_vram_total"
+                gpu["memory_bytes"] = int(vram.read_text()) if vram.is_file() else None
+                gpus.append(gpu)
+            except (OSError, ValueError):
+                continue
+        return gpus or None
+    return None
 
 
 def verify_weight(path, expected, check_hash):
@@ -90,9 +140,7 @@ def diagnose(check_hash=False):
     runtime = ROOT / ".runtime"
     weights = runtime / "model" / "model.ckpt"
     foreground_weights = runtime / "u2net" / "u2net.onnx"
-    python = (
-        runtime / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    )
+    python = runtime_python(runtime)
     requirements = [
         python,
         weights,
@@ -111,6 +159,7 @@ def diagnose(check_hash=False):
             probe = subprocess.run(
                 [
                     str(python),
+                    "-I",
                     "-c",
                     RUNTIME_PROBE,
                 ],
@@ -150,7 +199,7 @@ def diagnose(check_hash=False):
             "preflight": "ready_to_try"
             if photo_ready
             else "setup_or_verification_required",
-            "setup": "engine/setup.ps1",
+            "setup": "engine/setup.ps1" if os.name == "nt" else "sh engine/setup-posix.sh",
         },
         "trellis2": {
             "implemented": False,
